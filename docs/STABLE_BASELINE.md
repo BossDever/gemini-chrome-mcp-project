@@ -9,6 +9,7 @@ parity with the ChatGPT MCP project, but the core architecture is in place:
 - path-local tab binding under `.gemini-chrome-mcp/bindings/`
 - strict binding checks
 - raw and conservative structured read modes
+- read-only visible artifact diagnostics for image/download workflows
 - Gemini-specific DOM adapter
 - base64 message input for write safety
 - send and send-and-wait tools
@@ -35,6 +36,11 @@ Current tests: 19/19.
 ## Known Boundaries
 
 - Download tools are not implemented.
+- Image generation was tried live on 2026-05-15. Gemini accepted the prompt but
+  the current page/model responded that it could not directly output image
+  files, so there was no generated image artifact or download control to click.
+  `gemini_cdp_list_artifacts` is available to verify this state without
+  clicking UI controls.
 - Upload/remove is implemented through CDP file chooser interception and
   in-tab mouse events. Live smoke verified upload creates one pending attachment
   and removal returns the composer to zero pending attachments.

@@ -10,6 +10,7 @@ import {
   findCdpTab,
   getCdpState,
   importCdpCodeRepository,
+  listCdpArtifacts,
   listCdpTabs,
   openCdpTab,
   readCdpPage,
@@ -205,6 +206,35 @@ server.registerTool(
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_READ_FAILED", error: error.message }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_list_artifacts",
+  {
+    title: "List visible Gemini image/download artifacts",
+    inputSchema: {
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      tabId: z.string().optional(),
+      useBoundTab: z.boolean().optional(),
+      strictBinding: z.boolean().optional(),
+      maxItems: z.number().int().min(1).max(200).optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { readOnlyHint: true },
+  },
+  async ({ baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, maxItems = 50, requestId }) => {
+    const startedAt = new Date().toISOString();
+    try {
+      const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      const artifacts = await listCdpArtifacts({ baseUrl: target.baseUrl, tabId: target.tabId, maxItems });
+      const result = withMeta({ ...artifacts, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result };
+    } catch (error) {
+      const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_LIST_ARTIFACTS_FAILED", error: error.message }, { requestId, startedAt });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },

@@ -45,8 +45,9 @@ async function clearComposerDraft(tabId) {
 try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.equal(names.length, 12, "unexpected MCP tool count");
+  assert.equal(names.length, 13, "unexpected MCP tool count");
   assert(names.includes("gemini_cdp_get_state"), "missing gemini_cdp_get_state");
+  assert(names.includes("gemini_cdp_list_artifacts"), "missing gemini_cdp_list_artifacts");
   assert(names.includes("gemini_cdp_import_code_repository"), "missing gemini_cdp_import_code_repository");
   assert(names.includes("gemini_cdp_read"), "missing gemini_cdp_read");
   assert(names.includes("gemini_cdp_send_and_wait"), "missing gemini_cdp_send_and_wait");

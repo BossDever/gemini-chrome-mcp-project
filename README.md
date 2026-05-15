@@ -24,6 +24,7 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_bind_tab`
 - `gemini_cdp_get_bound_tab`
 - `gemini_cdp_get_state`
+- `gemini_cdp_list_artifacts`
 - `gemini_cdp_import_code_repository`
 - `gemini_cdp_read`
 - `gemini_cdp_upload_file`
@@ -46,6 +47,9 @@ blocked executable-style extensions before Gemini sees the file.
 workflow and declines GitHub account connection by default unless explicitly
 allowed. GitHub consent matching is fail-closed and repository URLs are parsed
 as GitHub URLs before any UI action.
+`gemini_cdp_list_artifacts` is a read-only diagnostic for image/download
+workflows. It reports visible images, likely generated images, and download-like
+controls without clicking them.
 
 Run checks with:
 
