@@ -26,3 +26,5 @@ Start with a small Gemini-specific baseline:
 
 Do not copy ChatGPT selectors directly. Gemini needs its own fixtures, role
 detection, composer detection, send-button detection, and safety checks.
+
+Current discovery notes live in [docs/DISCOVERY.md](docs/DISCOVERY.md).

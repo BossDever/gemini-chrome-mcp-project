@@ -12,6 +12,7 @@ provider-specific and independent from the stable ChatGPT MCP project.
 - Inspect composer, send button, stop button, response containers, attachments,
   and any file upload behavior.
 - Capture a static Gemini-like fixture for tests.
+- Record selectors and pitfalls in `docs/DISCOVERY.md`.
 
 ## Phase 2: Read-Only Baseline
 
