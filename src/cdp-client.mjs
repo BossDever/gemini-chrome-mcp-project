@@ -443,17 +443,99 @@ export async function listCdpArtifacts({
         })
         .filter((entry) => /download|save as|save image|\\u0e14\\u0e32\\u0e27\\u0e19\\u0e4c\\u0e42\\u0e2b\\u0e25\\u0e14|\\u0e1a\\u0e31\\u0e19\\u0e17\\u0e36\\u0e01|blob:|data:/i.test(entry.label))
         .slice(0, maxItems);
+      const imagePlaceholders = [...document.querySelectorAll("message-content p, message-content li, message-content div")]
+        .map((el, index) => ({ el, index, text: textOf(el) }))
+        .filter((entry) => /\\[\\s*image\\s*:/i.test(entry.text))
+        .slice(0, maxItems)
+        .map((entry) => ({
+          index: entry.index,
+          type: "image_placeholder",
+          text: entry.text.slice(0, 500),
+          rect: rectOf(entry.el),
+        }));
       return {
         url: location.href,
         title: document.title,
         imageCount: images.length,
         likelyGeneratedImageCount: images.filter((image) => image.likelyGenerated).length,
         downloadControlCount: downloadControls.length,
+        imagePlaceholderCount: imagePlaceholders.length,
         images,
         downloadControls,
+        imagePlaceholders,
       };
     })()`, 10000);
     return { ok: true, tab, artifacts };
+  });
+}
+
+export async function selectCdpToolboxMode({
+  baseUrl = defaultCdpBaseUrl(),
+  tabId,
+  mode,
+  lockTimeoutMs = 30000,
+} = {}) {
+  const normalizedMode = String(mode ?? "").toLowerCase();
+  if (!["image", "video", "music", "canvas", "deep_research", "guided_learning"].includes(normalizedMode)) {
+    throw new Error("mode must be one of: image, video, music, canvas, deep_research, guided_learning.");
+  }
+  const normalized = normalizeBaseUrl(baseUrl);
+  const tab = await findCdpTab({ baseUrl: normalized, tabId });
+  assertGeminiTab(tab);
+  return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
+    const selected = await evaluateCdp(session, `(async () => {
+      const mode = ${JSON.stringify(normalizedMode)};
+      const labels = {
+        image: [/^image$/i, /\\u0e23\\u0e39\\u0e1b\\u0e20\\u0e32\\u0e1e/],
+        video: [/^video$/i, /\\u0e27\\u0e34\\u0e14\\u0e35\\u0e42\\u0e2d/],
+        music: [/^music/i, /\\u0e40\\u0e1e\\u0e25\\u0e07/],
+        canvas: [/^canvas$/i],
+        deep_research: [/deep\\s*research/i],
+        guided_learning: [/guided\\s*learning/i, /\\u0e01\\u0e32\\u0e23\\u0e40\\u0e23\\u0e35\\u0e22\\u0e19\\u0e23\\u0e39\\u0e49/],
+      };
+      const isVisible = (el) => {
+        if (!el) return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+      };
+      const labelOf = (el) => [
+        el.getAttribute("aria-label") || "",
+        el.getAttribute("title") || "",
+        el.innerText || el.textContent || "",
+      ].join(" ").replace(/\\s+/g, " ").trim();
+      const clickElement = (el) => {
+        const rect = el.getBoundingClientRect();
+        const x = rect.left + rect.width / 2;
+        const y = rect.top + rect.height / 2;
+        el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, clientX: x, clientY: y, buttons: 1 }));
+        el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, clientX: x, clientY: y }));
+        el.click();
+      };
+      const findItems = () => [...document.querySelectorAll("[role='menuitemcheckbox']")].filter(isVisible);
+      let items = findItems();
+      if (!items.length) {
+        const toolbox = [...document.querySelectorAll("button")]
+          .filter(isVisible)
+          .find((button) => /tools|\\u0e40\\u0e04\\u0e23\\u0e37\\u0e48\\u0e2d\\u0e07\\u0e21\\u0e37\\u0e2d/i.test(labelOf(button)));
+        if (!toolbox) return { ok: false, errorCode: "GEMINI_TOOLBOX_BUTTON_NOT_FOUND" };
+        clickElement(toolbox);
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        items = findItems();
+      }
+      const target = items.find((item) => labels[mode].some((pattern) => pattern.test(labelOf(item))));
+      if (!target) {
+        return { ok: false, errorCode: "GEMINI_TOOLBOX_MODE_NOT_FOUND", mode, items: items.map(labelOf) };
+      }
+      clickElement(target);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return {
+        ok: true,
+        mode,
+        itemText: labelOf(target),
+        ariaChecked: target.getAttribute("aria-checked") || "",
+      };
+    })()`, 10000);
+    return { ok: Boolean(selected.ok), errorCode: selected.ok ? undefined : selected.errorCode, tab, selected };
   });
 }
 

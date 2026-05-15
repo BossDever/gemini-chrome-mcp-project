@@ -80,6 +80,11 @@ test("isGeminiGenerating ignores hidden stop controls", () => {
   assert.equal(isGeminiGenerating(document), false);
 });
 
+test("isGeminiGenerating ignores toolbox deselect controls", () => {
+  const document = parseHTML(`<button aria-label="\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01\u0e01\u0e32\u0e23\u0e40\u0e25\u0e37\u0e2d\u0e01 \u0e2a\u0e23\u0e49\u0e32\u0e07\u0e23\u0e39\u0e1b\u0e20\u0e32\u0e1e">\u0e2a\u0e23\u0e49\u0e32\u0e07\u0e23\u0e39\u0e1b\u0e20\u0e32\u0e1e</button>`).document;
+  assert.equal(isGeminiGenerating(document), false);
+});
+
 test("getGeminiDomState returns conservative state", () => {
   const document = parseHTML(`
     <div class="ql-editor" role="textbox" contenteditable="true">draft</div>

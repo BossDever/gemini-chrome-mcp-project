@@ -10,6 +10,7 @@ parity with the ChatGPT MCP project, but the core architecture is in place:
 - strict binding checks
 - raw and conservative structured read modes
 - read-only visible artifact diagnostics for image/download workflows
+- Gemini toolbox mode selection for image/video/music/canvas workflows
 - Gemini-specific DOM adapter
 - base64 message input for write safety
 - send and send-and-wait tools
@@ -31,16 +32,18 @@ npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
 ```
 
-Current tests: 19/19.
+Current tests: 20/20.
 
 ## Known Boundaries
 
 - Download tools are not implemented.
 - Image generation was tried live on 2026-05-15. Gemini accepted the prompt but
-  the current page/model responded that it could not directly output image
-  files, so there was no generated image artifact or download control to click.
-  `gemini_cdp_list_artifacts` is available to verify this state without
-  clicking UI controls.
+  the current page/model first responded that it could not directly output image
+  files. After selecting the toolbar `image` mode, Gemini routed the request to
+  `gemini-3-pro-image-preview` but rendered a textual `[Image: ...]`
+  placeholder instead of an `<img>`, blob, or download control. This means there
+  was still no local file to download from the DOM. `gemini_cdp_list_artifacts`
+  reports both real image/download artifacts and these placeholders.
 - Upload/remove is implemented through CDP file chooser interception and
   in-tab mouse events. Live smoke verified upload creates one pending attachment
   and removal returns the composer to zero pending attachments.

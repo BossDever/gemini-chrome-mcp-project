@@ -25,6 +25,7 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_get_bound_tab`
 - `gemini_cdp_get_state`
 - `gemini_cdp_list_artifacts`
+- `gemini_cdp_select_toolbox_mode`
 - `gemini_cdp_import_code_repository`
 - `gemini_cdp_read`
 - `gemini_cdp_upload_file`
@@ -49,7 +50,11 @@ allowed. GitHub consent matching is fail-closed and repository URLs are parsed
 as GitHub URLs before any UI action.
 `gemini_cdp_list_artifacts` is a read-only diagnostic for image/download
 workflows. It reports visible images, likely generated images, and download-like
-controls without clicking them.
+controls without clicking them. It also reports Gemini image placeholders such
+as `[Image: ...]` when the image tool produces a textual placeholder instead of
+a downloadable file.
+`gemini_cdp_select_toolbox_mode` can select Gemini toolbar modes such as
+`image`, `video`, `music`, or `canvas` before sending a prompt.
 
 Run checks with:
 

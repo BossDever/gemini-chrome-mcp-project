@@ -17,6 +17,7 @@ import {
   removeCdpAttachments,
   sendCdpMessage,
   sendCdpMessageAndWait,
+  selectCdpToolboxMode,
   uploadCdpFile,
 } from "./cdp-client.mjs";
 import {
@@ -235,6 +236,36 @@ server.registerTool(
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_LIST_ARTIFACTS_FAILED", error: error.message }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_select_toolbox_mode",
+  {
+    title: "Select Gemini toolbox mode",
+    inputSchema: {
+      mode: z.enum(["image", "video", "music", "canvas", "deep_research", "guided_learning"]),
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      tabId: z.string().optional(),
+      useBoundTab: z.boolean().optional(),
+      strictBinding: z.boolean().optional(),
+      lockTimeoutMs: z.number().int().min(1000).max(120000).optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ mode, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, lockTimeoutMs = 30000, requestId }) => {
+    const startedAt = new Date().toISOString();
+    try {
+      const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      const selected = await selectCdpToolboxMode({ baseUrl: target.baseUrl, tabId: target.tabId, mode, lockTimeoutMs });
+      const result = withMeta({ ...selected, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !selected.ok };
+    } catch (error) {
+      const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_SELECT_TOOLBOX_MODE_FAILED", error: error.message }, { requestId, startedAt });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },

@@ -64,9 +64,9 @@ export function isGeminiGenerating(doc = document) {
     const iconText = textOf(el.querySelector?.("mat-icon, .mat-icon")).toLowerCase();
     const hasStopIcon = Boolean(el.querySelector?.('svg[aria-label*="stop" i], [data-icon*="stop" i]')) ||
       /stop|\u0e2b\u0e22\u0e38\u0e14/.test(iconText);
-    return /stop|interrupt|cancel/.test(label) ||
-      /\u0e2b\u0e22\u0e38\u0e14|\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01/.test(label) ||
-      /stop|interrupt|cancel/.test(testId) ||
+    return /stop|interrupt|cancel\s+(generation|response)|cancel.*(generation|response)/.test(label) ||
+      /\u0e2b\u0e22\u0e38\u0e14|\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01.*(\u0e01\u0e32\u0e23\u0e2a\u0e23\u0e49\u0e32\u0e07|\u0e04\u0e33\u0e15\u0e2d\u0e1a)/.test(label) ||
+      /stop|interrupt|cancel-(generation|response)|cancel.*(generation|response)/.test(testId) ||
       hasStopIcon;
   });
 }
