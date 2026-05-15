@@ -4,6 +4,7 @@ import { parseHTML } from "linkedom";
 
 import {
   buildStructuredVisibleDomRead,
+  extractAttachmentCandidates,
   extractVisibleTurns,
   findComposer,
   findSendButton,
@@ -76,4 +77,22 @@ test("getGeminiDomState returns conservative state", () => {
   assert.equal(state.turnCount, 2);
   assert.equal(state.lastUserText, "Question");
   assert.equal(state.lastAssistantText, "Answer");
+});
+
+test("attachment extraction deduplicates Gemini file preview controls", () => {
+  const document = parseHTML(`
+    <div class="attachment-preview-wrapper">
+      <uploader-file-preview>
+        <div data-test-id="file-preview">
+          <div data-test-id="file-name">gemini-mcp...load-smoke</div>
+          <button data-test-id="cancel-button" aria-label="Remove gemini-mcp-upload-smoke.txt"></button>
+        </div>
+      </uploader-file-preview>
+    </div>
+  `).document;
+  const attachments = extractAttachmentCandidates(document);
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0].name, "gemini-mcp...load-smoke");
+  assert.equal(attachments[0].hasRemoveControl, true);
+  assert.equal(attachments[0].removeLabel, "Remove gemini-mcp-upload-smoke.txt");
 });

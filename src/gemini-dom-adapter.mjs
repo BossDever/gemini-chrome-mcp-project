@@ -84,6 +84,39 @@ export function extractVisibleTurns(doc = document) {
   return records;
 }
 
+export function extractAttachmentCandidates(doc = document) {
+  const records = [];
+  const cards = [
+    ...doc.querySelectorAll('.attachment-preview-wrapper, uploader-file-preview, [data-test-id="file-preview"], .file-preview'),
+  ];
+  const seen = new WeakSet();
+  const seenKeys = new Set();
+  for (const card of cards) {
+    if (seen.has(card)) continue;
+    seen.add(card);
+    const nameEl = card.querySelector?.('[data-test-id="file-name"], .file-name');
+    const removeButton = card.querySelector?.('[data-test-id="cancel-button"], button.cancel-button') ||
+      card.parentElement?.querySelector?.('[data-test-id="cancel-button"], button.cancel-button') ||
+      null;
+    const text = textOf(card);
+    const name = textOf(nameEl) || text;
+    const removeLabel = removeButton?.getAttribute?.("aria-label") || textOf(removeButton);
+    if (!name && !removeLabel) continue;
+    const key = removeLabel || `${name}|${text}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    records.push({
+      index: records.length,
+      name,
+      text,
+      removeLabel,
+      hasRemoveControl: Boolean(removeButton),
+      source: "composer_attachment_preview",
+    });
+  }
+  return records;
+}
+
 export function truncateText(text, maxChars) {
   const value = String(text ?? "");
   if (!Number.isInteger(maxChars) || maxChars < 0 || value.length <= maxChars) {
@@ -149,6 +182,7 @@ export function getGeminiDomState(doc = document) {
   const composer = findComposer(doc);
   const sendButton = findSendButton(doc);
   const turns = extractVisibleTurns(doc);
+  const attachments = extractAttachmentCandidates(doc);
   const lastUser = [...turns].reverse().find((turn) => turn.role === "user") ?? null;
   const lastAssistant = [...turns].reverse().find((turn) => turn.role === "assistant") ?? null;
   return {
@@ -158,6 +192,9 @@ export function getGeminiDomState(doc = document) {
     composerText: textOf(composer),
     sendButtonEnabled: Boolean(sendButton) && !isElementDisabled(sendButton),
     isGenerating: isGeminiGenerating(doc),
+    attachmentCount: attachments.length,
+    attachmentNames: attachments.map((attachment) => attachment.name).filter(Boolean),
+    attachments,
     turnCount: turns.length,
     turns,
     lastUserText: lastUser?.text ?? "",
@@ -179,6 +216,7 @@ export function geminiDomAdapterScript() {
       const stripUserPrefix = ${stripUserPrefix.toString()};
       const stripAssistantPrefix = ${stripAssistantPrefix.toString()};
       const extractVisibleTurns = ${extractVisibleTurns.toString()};
+      const extractAttachmentCandidates = ${extractAttachmentCandidates.toString()};
       const truncateText = ${truncateText.toString()};
       const buildStructuredVisibleDomRead = ${buildStructuredVisibleDomRead.toString()};
       const getGeminiDomState = ${getGeminiDomState.toString()};
@@ -192,6 +230,7 @@ export function geminiDomAdapterScript() {
         stripUserPrefix,
         stripAssistantPrefix,
         extractVisibleTurns,
+        extractAttachmentCandidates,
         truncateText,
         buildStructuredVisibleDomRead,
         getGeminiDomState,

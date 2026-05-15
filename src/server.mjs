@@ -12,8 +12,10 @@ import {
   listCdpTabs,
   openCdpTab,
   readCdpPage,
+  removeCdpAttachments,
   sendCdpMessage,
   sendCdpMessageAndWait,
+  uploadCdpFile,
 } from "./cdp-client.mjs";
 import {
   normalizeSessionName,
@@ -202,6 +204,70 @@ server.registerTool(
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_READ_FAILED", error: error.message }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_remove_attachments",
+  {
+    title: "Remove Gemini CDP attachments",
+    inputSchema: {
+      attachmentNameContains: z.string().optional(),
+      removeAll: z.boolean().optional(),
+      maxAttachments: z.number().int().min(1).max(50).optional(),
+      waitMs: z.number().int().min(500).max(60000).optional(),
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      tabId: z.string().optional(),
+      useBoundTab: z.boolean().optional(),
+      strictBinding: z.boolean().optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ attachmentNameContains, removeAll = false, maxAttachments = 10, waitMs = 10000, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
+    const startedAt = new Date().toISOString();
+    try {
+      if (!attachmentNameContains && !removeAll) throw new Error("ATTACHMENT_FILTER_REQUIRED");
+      const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      const removed = await removeCdpAttachments({ baseUrl: target.baseUrl, tabId: target.tabId, attachmentNameContains, removeAll, maxAttachments, waitMs });
+      const result = withMeta({ ...removed, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !removed.ok };
+    } catch (error) {
+      const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_REMOVE_ATTACHMENTS_FAILED", error: error.message }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_upload_file",
+  {
+    title: "Upload file to Gemini through CDP",
+    inputSchema: {
+      filePath: z.string(),
+      waitForUploadMs: z.number().int().min(1000).max(120000).optional(),
+      force: z.boolean().optional(),
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      tabId: z.string().optional(),
+      useBoundTab: z.boolean().optional(),
+      strictBinding: z.boolean().optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ filePath, waitForUploadMs = 15000, force = false, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
+    const startedAt = new Date().toISOString();
+    try {
+      const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      const upload = await uploadCdpFile({ baseUrl: target.baseUrl, tabId: target.tabId, filePath, waitForUploadMs, force });
+      const result = withMeta({ ...upload, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !upload.ok };
+    } catch (error) {
+      const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_UPLOAD_FILE_FAILED", error: error.message }, { requestId, startedAt });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },

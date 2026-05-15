@@ -99,6 +99,24 @@ Upload support should not be implemented until the file chooser and attachment
 state are inspected in a live test. The first Gemini MCP baseline should stay
 read-only.
 
+Later live upload testing showed that plain DOM `element.click()` on Gemini's
+upload controls does not reliably open a CDP `Page.fileChooserOpened` event.
+Using `Input.dispatchMouseEvent` inside the target tab against
+`[data-test-id="local-images-files-uploader-button"]` does open the chooser
+without taking over the Windows mouse cursor. After `DOM.setFileInputFiles`,
+Gemini renders pending files under selectors such as:
+
+```text
+.attachment-preview-wrapper
+uploader-file-preview
+[data-test-id="file-preview"]
+[data-test-id="file-name"]
+[data-test-id="cancel-button"]
+```
+
+The cancel button contains the full filename in its `aria-label`, while the
+visible chip may truncate long names.
+
 ## Visible Containers
 
 Observed top-level chat containers:

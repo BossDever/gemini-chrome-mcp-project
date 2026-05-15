@@ -5,9 +5,11 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { evaluateCdp, findCdpTab, withCdpTab } from "../src/cdp-client.mjs";
 
 const args = new Set(process.argv.slice(2));
+const rawArgs = process.argv.slice(2);
 const requireCdp = args.has("--require-cdp");
 const requireBinding = args.has("--require-binding");
 const dryRunSend = args.has("--dry-run-send");
+const uploadRemoveFile = valueAfterFlag(rawArgs, "--upload-remove-file");
 
 const transport = new StdioClientTransport({
   command: "node",
@@ -16,6 +18,14 @@ const transport = new StdioClientTransport({
 });
 const client = new Client({ name: "gemini-chrome-mcp-smoke", version: "0.0.0" });
 await client.connect(transport);
+
+function valueAfterFlag(values, flag) {
+  const index = values.indexOf(flag);
+  if (index === -1) return null;
+  const value = values[index + 1];
+  assert(value && !value.startsWith("--"), `${flag} requires a file path value`);
+  return value;
+}
 
 async function clearComposerDraft(tabId) {
   if (!tabId) return { ok: false, errorCode: "BOUND_TAB_MISSING" };
@@ -35,10 +45,12 @@ async function clearComposerDraft(tabId) {
 try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.equal(names.length, 9, "unexpected MCP tool count");
+  assert.equal(names.length, 11, "unexpected MCP tool count");
   assert(names.includes("gemini_cdp_get_state"), "missing gemini_cdp_get_state");
   assert(names.includes("gemini_cdp_read"), "missing gemini_cdp_read");
   assert(names.includes("gemini_cdp_send_and_wait"), "missing gemini_cdp_send_and_wait");
+  assert(names.includes("gemini_cdp_upload_file"), "missing gemini_cdp_upload_file");
+  assert(names.includes("gemini_cdp_remove_attachments"), "missing gemini_cdp_remove_attachments");
 
   const status = await client.callTool({ name: "chrome_cdp_status", arguments: {} });
   const cdpAvailable = status.structuredContent?.ok === true;
@@ -48,6 +60,7 @@ try {
   let state = null;
   let structured = null;
   let dryRun = null;
+  let uploadRemove = null;
   if (cdpAvailable) {
     bound = await client.callTool({ name: "gemini_cdp_get_bound_tab", arguments: { sessionName: "default" } });
     const hasBoundTab = bound.structuredContent?.ok === true && Boolean(bound.structuredContent?.bound?.tabId);
@@ -94,6 +107,33 @@ try {
         }
         dryRun = { ok: true, composerText: after.structuredContent?.state?.composerText, cleanupOk: true };
       }
+      if (uploadRemoveFile) {
+        const before = await client.callTool({
+          name: "gemini_cdp_get_state",
+          arguments: { sessionName: "default", strictBinding: true, maxChars: 1000 },
+        });
+        assert.equal(before.structuredContent?.state?.attachmentCount ?? 0, 0, "upload/remove smoke requires no pending attachments");
+        const upload = await client.callTool({
+          name: "gemini_cdp_upload_file",
+          arguments: { sessionName: "default", strictBinding: true, filePath: uploadRemoveFile, waitForUploadMs: 20000 },
+        });
+        assert.equal(upload.structuredContent?.ok, true, "upload smoke failed");
+        const remove = await client.callTool({
+          name: "gemini_cdp_remove_attachments",
+          arguments: { sessionName: "default", strictBinding: true, removeAll: true },
+        });
+        assert.equal(remove.structuredContent?.ok, true, "remove attachment smoke failed");
+        const after = await client.callTool({
+          name: "gemini_cdp_get_state",
+          arguments: { sessionName: "default", strictBinding: true, maxChars: 1000 },
+        });
+        assert.equal(after.structuredContent?.state?.attachmentCount ?? 0, 0, "upload/remove smoke left pending attachments");
+        uploadRemove = {
+          ok: true,
+          attachmentCountAfterUpload: upload.structuredContent?.stateAfterUpload?.attachmentCount ?? null,
+          attachmentCountAfterRemove: after.structuredContent?.state?.attachmentCount ?? null,
+        };
+      }
     }
   }
 
@@ -105,6 +145,7 @@ try {
     strictStateOk: state?.structuredContent?.ok ?? null,
     structuredReadOk: structured?.structuredContent?.ok ?? null,
     dryRunSend: dryRun,
+    uploadRemove,
     warnings: state?.structuredContent?.bindingWarnings?.map((warning) => warning.code) ?? [],
   }, null, 2));
 } finally {

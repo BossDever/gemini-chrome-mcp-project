@@ -25,6 +25,8 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_get_bound_tab`
 - `gemini_cdp_get_state`
 - `gemini_cdp_read`
+- `gemini_cdp_upload_file`
+- `gemini_cdp_remove_attachments`
 - `gemini_cdp_send`
 - `gemini_cdp_send_and_wait`
 
@@ -32,6 +34,9 @@ The stable path starts with tab binding and read/state tools. `gemini_cdp_send`
 supports `messageBase64` so Thai and unusual symbols do not pass through lossy
 shell encoding. `gemini_cdp_send_and_wait` exists, but should be treated as
 early hardening work until more live Gemini response fixtures are collected.
+`gemini_cdp_upload_file` and `gemini_cdp_remove_attachments` use CDP file
+chooser interception and in-tab mouse events, so they do not take over the
+Windows mouse cursor.
 
 Run checks with:
 
@@ -39,6 +44,7 @@ Run checks with:
 npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
+npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
 ```
 
 ## Initial Direction

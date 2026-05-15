@@ -34,12 +34,19 @@ needed before treating send-and-wait as stable.
 - Add `gemini_cdp_send_and_wait`.
 - Add per-tab write locks.
 
+Status: implemented for the first milestone. `send_and_wait` still needs more
+live fixtures because Gemini response timing can differ from ChatGPT.
+
 ## Phase 4: Files And Safety
 
 - Investigate Gemini upload UI.
 - Add file safety validation before uploads.
 - Add live upload/remove smoke only if the UI can be controlled without risking
   user data.
+
+Status: upload/remove is implemented through CDP file chooser interception and
+in-tab mouse events. Next hardening step is stricter file safety policy and more
+attachment fixtures.
 
 ## Avoid Initially
 

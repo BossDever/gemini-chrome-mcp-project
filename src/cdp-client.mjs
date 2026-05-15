@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { geminiDomAdapterScript } from "./gemini-dom-adapter.mjs";
 
@@ -132,6 +132,7 @@ export class CdpSession {
     this.webSocketDebuggerUrl = webSocketDebuggerUrl;
     this.nextId = 1;
     this.pending = new Map();
+    this.waiters = [];
     this.ws = null;
   }
 
@@ -144,6 +145,11 @@ export class CdpSession {
         reject(new Error("CDP websocket closed."));
       }
       this.pending.clear();
+      for (const { reject, timer } of this.waiters) {
+        clearTimeout(timer);
+        reject(new Error("CDP websocket closed."));
+      }
+      this.waiters = [];
     });
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Timed out opening CDP websocket.")), 10000);
@@ -160,12 +166,26 @@ export class CdpSession {
 
   handleMessage(raw) {
     const message = JSON.parse(raw);
-    if (!message.id || !this.pending.has(message.id)) return;
-    const pending = this.pending.get(message.id);
-    this.pending.delete(message.id);
-    clearTimeout(pending.timer);
-    if (message.error) pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
-    else pending.resolve(message.result ?? {});
+    if (message.id && this.pending.has(message.id)) {
+      const pending = this.pending.get(message.id);
+      this.pending.delete(message.id);
+      clearTimeout(pending.timer);
+      if (message.error) pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
+      else pending.resolve(message.result ?? {});
+      return;
+    }
+    if (message.method) {
+      const remaining = [];
+      for (const waiter of this.waiters) {
+        if (waiter.method === message.method && waiter.predicate(message.params ?? {})) {
+          clearTimeout(waiter.timer);
+          waiter.resolve(message.params ?? {});
+        } else {
+          remaining.push(waiter);
+        }
+      }
+      this.waiters = remaining;
+    }
   }
 
   send(method, params = {}, timeoutMs = 10000) {
@@ -182,6 +202,16 @@ export class CdpSession {
 
   close() {
     if (this.ws) this.ws.close();
+  }
+
+  waitForEvent(method, predicate = () => true, timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter((waiter) => waiter.resolve !== resolve);
+        reject(new Error(`Timed out waiting for CDP event ${method}.`));
+      }, timeoutMs);
+      this.waiters.push({ method, predicate, resolve, reject, timer });
+    });
   }
 }
 
@@ -444,4 +474,240 @@ export async function sendCdpMessageAndWait({
     lastAssistantTextHash: lastState?.lastAssistantTextHash ?? "",
     finalState: lastState,
   };
+}
+
+export async function uploadCdpFile({
+  baseUrl = defaultCdpBaseUrl(),
+  tabId,
+  filePath,
+  waitForUploadMs = 15000,
+  force = false,
+  lockTimeoutMs = 120000,
+} = {}) {
+  if (!filePath) throw new Error("filePath is required.");
+  const fileInfo = await stat(filePath);
+  if (!fileInfo.isFile()) throw new Error("filePath must point to a file.");
+
+  const normalized = normalizeBaseUrl(baseUrl);
+  const tab = await findCdpTab({ baseUrl: normalized, tabId });
+  assertGeminiTab(tab);
+  const fileName = path.basename(filePath);
+
+  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+    const stateBeforeUpload = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    if (stateBeforeUpload.isGenerating && !force) {
+      return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeUpload };
+    }
+
+    await session.send("DOM.enable");
+    const uploaded = await uploadViaFileChooserInterception(session, filePath, fileName, waitForUploadMs);
+    const stateAfterUpload = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    return {
+      ...uploaded,
+      tab,
+      fileName,
+      fileLength: fileInfo.size,
+      stateBeforeUpload,
+      stateAfterUpload,
+    };
+  }));
+}
+
+async function uploadViaFileChooserInterception(session, filePath, fileName, waitForUploadMs) {
+  await session.send("Page.setInterceptFileChooserDialog", { enabled: true });
+  try {
+    const chooserPromise = session
+      .waitForEvent("Page.fileChooserOpened", () => true, 7000)
+      .catch((error) => ({ errorCode: "FILE_CHOOSER_NOT_OPENED", message: error.message }));
+
+    const target = await evaluateCdp(session, `(async () => {
+      ${geminiDomAdapterScript()}
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const centerOf = (el) => {
+        const rect = el.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, width: rect.width, height: rect.height };
+      };
+      let item = document.querySelector('[data-test-id="local-images-files-uploader-button"]');
+      if (!item) {
+        const openButton = document.querySelector("button.upload-card-button.open");
+        if (!openButton) return { ok: false, errorCode: "UPLOAD_MENU_BUTTON_NOT_FOUND" };
+        return { ok: true, target: "open_menu", ...centerOf(openButton) };
+      }
+      return {
+        ok: true,
+        target: "upload_item",
+        label: geminiDomAdapter.labelOf(item),
+        ...centerOf(item)
+      };
+    })()`, 10000);
+    if (!target?.ok) return { ok: false, method: "FileChooserIntercept", clicked: target };
+
+    let clicked = target;
+    if (target.target === "open_menu") {
+      await dispatchMouseClick(session, target);
+      await sleep(700);
+      clicked = await evaluateCdp(session, `(() => {
+        ${geminiDomAdapterScript()}
+        const item = document.querySelector('[data-test-id="local-images-files-uploader-button"]');
+        if (!item) return { ok: false, errorCode: "UPLOAD_MENU_ITEM_NOT_FOUND" };
+        if (geminiDomAdapter.isElementDisabled(item)) return { ok: false, errorCode: "UPLOAD_MENU_ITEM_DISABLED" };
+        const rect = item.getBoundingClientRect();
+        return {
+          ok: true,
+          target: "upload_item",
+          label: geminiDomAdapter.labelOf(item),
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+          width: rect.width,
+          height: rect.height
+        };
+      })()`, 10000);
+      if (!clicked?.ok) return { ok: false, method: "FileChooserIntercept", clicked };
+    }
+
+    await dispatchMouseClick(session, clicked);
+
+    const chooser = await chooserPromise;
+    if (chooser.errorCode) return { ok: false, method: "FileChooserIntercept", clicked, ...chooser };
+
+    const params = { files: [filePath] };
+    if (chooser.backendNodeId) params.backendNodeId = chooser.backendNodeId;
+    else if (chooser.frameId) params.frameId = chooser.frameId;
+    await session.send("DOM.setFileInputFiles", params, 10000);
+
+    const attachment = await waitForAttachmentByName(session, fileName, waitForUploadMs);
+    return {
+      ok: Boolean(attachment?.found),
+      errorCode: attachment?.found ? undefined : "GEMINI_ATTACHMENT_NOT_FOUND_AFTER_UPLOAD",
+      method: "FileChooserIntercept",
+      clicked,
+      chooser: {
+        mode: chooser.mode ?? null,
+        backendNodeId: chooser.backendNodeId ?? null,
+        frameId: chooser.frameId ?? null,
+      },
+      attachment,
+    };
+  } finally {
+    await session.send("Page.setInterceptFileChooserDialog", { enabled: false }).catch(() => {});
+  }
+}
+
+async function dispatchMouseClick(session, point) {
+  await session.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: point.x, y: point.y, button: "none" }, 10000);
+  await session.send("Input.dispatchMouseEvent", { type: "mousePressed", x: point.x, y: point.y, button: "left", clickCount: 1 }, 10000);
+  await session.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: point.x, y: point.y, button: "left", clickCount: 1 }, 10000);
+}
+
+async function waitForAttachmentByName(session, fileName, waitForUploadMs) {
+  const deadline = Date.now() + waitForUploadMs;
+  let attachment = null;
+  while (Date.now() < deadline) {
+    attachment = await evaluateCdp(session, `(() => {
+      ${geminiDomAdapterScript()}
+      const fileName = ${JSON.stringify(fileName)};
+      const fileStem = fileName.replace(/\\.[^.]+$/, "");
+      const all = [...document.querySelectorAll("[aria-label], [data-test-id], [data-testid], button, [role=button], mat-chip, .file-name, [class*=file], [class*=upload], [class*=attach]")];
+      const candidates = all.map((el, index) => {
+        const text = geminiDomAdapter.textOf(el);
+        const ariaLabel = el.getAttribute("aria-label") || "";
+        const dataTestId = el.getAttribute("data-test-id") || el.getAttribute("data-testid") || "";
+        const className = el.getAttribute("class") || "";
+        const haystack = [text, ariaLabel, dataTestId, className].join(" ");
+        return {
+          index,
+          tag: el.tagName.toLowerCase(),
+          text: text.slice(0, 300),
+          ariaLabel: ariaLabel.slice(0, 300),
+          dataTestId,
+          className: className.slice(0, 300),
+          visible: Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length),
+          matched: haystack.toLowerCase().includes(fileName.toLowerCase()) ||
+            (fileStem.length >= 3 && haystack.toLowerCase().includes(fileStem.toLowerCase()))
+        };
+      }).filter((candidate) => candidate.matched);
+      return { found: candidates.length > 0, fileName, candidates };
+    })()`, 10000);
+    if (attachment?.found) break;
+    await sleep(500);
+  }
+  return attachment;
+}
+
+export async function removeCdpAttachments({
+  baseUrl = defaultCdpBaseUrl(),
+  tabId,
+  attachmentNameContains,
+  removeAll = false,
+  maxAttachments = 10,
+  waitMs = 10000,
+  lockTimeoutMs = 120000,
+} = {}) {
+  if (!removeAll && !attachmentNameContains) {
+    throw new Error("Provide attachmentNameContains or set removeAll=true.");
+  }
+  const normalized = normalizeBaseUrl(baseUrl);
+  const tab = await findCdpTab({ baseUrl: normalized, tabId });
+  assertGeminiTab(tab);
+  const filterText = (attachmentNameContains ?? "").toLowerCase();
+
+  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+    const stateBeforeRemove = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    const removed = await evaluateCdp(session, `(() => {
+      ${geminiDomAdapterScript()}
+      const filterText = ${JSON.stringify(filterText)};
+      const removeAll = ${JSON.stringify(Boolean(removeAll))};
+      const maxAttachments = ${JSON.stringify(maxAttachments)};
+      const cards = [...document.querySelectorAll('.attachment-preview-wrapper, uploader-file-preview, [data-test-id="file-preview"], .file-preview')];
+      const clicked = [];
+      const seenButtons = new WeakSet();
+      for (const card of cards) {
+        const name = geminiDomAdapter.textOf(card.querySelector?.('[data-test-id="file-name"], .file-name')) ||
+          geminiDomAdapter.textOf(card);
+        const removeButton = card.querySelector?.('[data-test-id="cancel-button"], button.cancel-button') ||
+          card.parentElement?.querySelector?.('[data-test-id="cancel-button"], button.cancel-button') ||
+          null;
+        const removeLabel = removeButton?.getAttribute?.("aria-label") || geminiDomAdapter.textOf(removeButton);
+        const haystack = [name, geminiDomAdapter.textOf(card), removeLabel].join(" ").toLowerCase();
+        if (!removeAll && !haystack.includes(filterText)) continue;
+        if (!removeButton) {
+          clicked.push({ name, clicked: false, reason: "REMOVE_BUTTON_NOT_FOUND" });
+          continue;
+        }
+        if (seenButtons.has(removeButton)) continue;
+        seenButtons.add(removeButton);
+        removeButton.click();
+        clicked.push({ name, clicked: true, removeLabel });
+        if (clicked.filter((entry) => entry.clicked).length >= maxAttachments) break;
+      }
+      return { ok: true, requested: clicked.length, clicked };
+    })()`, 10000);
+
+    const deadline = Date.now() + waitMs;
+    let stateAfterRemove = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    while (Date.now() < deadline) {
+      const remaining = stateAfterRemove.attachments.filter((attachment) => {
+        const haystack = [attachment.name, attachment.text, attachment.removeLabel].join(" ").toLowerCase();
+        return removeAll || haystack.includes(filterText);
+      });
+      if (remaining.length === 0) break;
+      await sleep(500);
+      stateAfterRemove = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    }
+    const remainingMatches = stateAfterRemove.attachments.filter((attachment) => {
+      const haystack = [attachment.name, attachment.text, attachment.removeLabel].join(" ").toLowerCase();
+      return removeAll || haystack.includes(filterText);
+    });
+    const clickedCount = removed.clicked.filter((entry) => entry.clicked).length;
+    const ok = removed.requested > 0 && clickedCount > 0 && remainingMatches.length === 0;
+    return {
+      ok,
+      errorCode: ok ? undefined : removed.requested === 0 ? "GEMINI_ATTACHMENT_NOT_FOUND" : "GEMINI_REMOVE_ATTACHMENTS_INCOMPLETE",
+      tab,
+      removed,
+      remainingMatches,
+      stateBeforeRemove,
+      stateAfterRemove,
+    };
+  }));
 }
