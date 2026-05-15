@@ -1,0 +1,6 @@
+node_modules/
+.gemini-chrome-mcp/
+archive/
+*.zip
+gemini-mcp-*.txt
+cdp-remove-test-*.txt
