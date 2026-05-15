@@ -9,6 +9,7 @@ import {
   findComposer,
   findSendButton,
   getGeminiDomState,
+  isGeminiGenerating,
 } from "../src/gemini-dom-adapter.mjs";
 
 test("findComposer targets Gemini editor and ignores Quill clipboard", () => {
@@ -61,6 +62,22 @@ test("structured visible DOM read reports visible-only and truncation metadata",
   assert.equal(result.turns[0].role, "assistant");
   assert.equal(result.turns[0].text, "This is a ");
   assert.equal(result.turns[0].truncated, true);
+});
+
+test("isGeminiGenerating detects Thai and structural stop controls", () => {
+  const thaiDocument = parseHTML(`<button aria-label="หยุดสร้างคำตอบ"></button>`).document;
+  assert.equal(isGeminiGenerating(thaiDocument), true);
+
+  const structuralDocument = parseHTML(`<button data-test-id="stop-generating-button"><mat-icon>stop</mat-icon></button>`).document;
+  assert.equal(isGeminiGenerating(structuralDocument), true);
+
+  const historyDocument = parseHTML(`<a role="button" data-test-id="conversation">เรื่อง stop words in history</a>`).document;
+  assert.equal(isGeminiGenerating(historyDocument), false);
+});
+
+test("isGeminiGenerating ignores hidden stop controls", () => {
+  const document = parseHTML(`<button aria-label="Stop generating" hidden></button>`).document;
+  assert.equal(isGeminiGenerating(document), false);
 });
 
 test("getGeminiDomState returns conservative state", () => {

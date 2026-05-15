@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { verifyLocalUploadFile } from "./file-safety.mjs";
 import { geminiDomAdapterScript } from "./gemini-dom-adapter.mjs";
 
 const DEFAULT_CDP_BASE_URL = "http://127.0.0.1:9222";
@@ -20,6 +21,29 @@ function normalizeBaseUrl(baseUrl = defaultCdpBaseUrl()) {
 
 function sha256Text(text) {
   return createHash("sha256").update(text ?? "", "utf8").digest("hex");
+}
+
+export function normalizeForTurnMatch(text) {
+  return String(text ?? "")
+    .normalize("NFKC")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function verifyOwnUserTurn({ beforeState, afterState, message } = {}) {
+  const expected = normalizeForTurnMatch(message);
+  const actual = normalizeForTurnMatch(afterState?.lastUserText ?? "");
+  const indexAdvanced = Number(afterState?.lastUserTurnIndex ?? -1) > Number(beforeState?.lastUserTurnIndex ?? -1);
+  const textMatches = Boolean(expected) && (actual === expected || actual.includes(expected));
+  return {
+    ok: indexAdvanced && textMatches,
+    indexAdvanced,
+    textMatches,
+    expectedHash: sha256Text(expected),
+    actualHash: sha256Text(actual),
+    beforeLastUserTurnIndex: beforeState?.lastUserTurnIndex ?? -1,
+    afterLastUserTurnIndex: afterState?.lastUserTurnIndex ?? -1,
+  };
 }
 
 function assertGeminiTab(tab) {
@@ -139,18 +163,7 @@ export class CdpSession {
   async connect() {
     this.ws = new WebSocket(this.webSocketDebuggerUrl);
     this.ws.addEventListener("message", (event) => this.handleMessage(event.data));
-    this.ws.addEventListener("close", () => {
-      for (const { reject, timer } of this.pending.values()) {
-        clearTimeout(timer);
-        reject(new Error("CDP websocket closed."));
-      }
-      this.pending.clear();
-      for (const { reject, timer } of this.waiters) {
-        clearTimeout(timer);
-        reject(new Error("CDP websocket closed."));
-      }
-      this.waiters = [];
-    });
+    this.ws.addEventListener("close", () => this.rejectPending(new Error("CDP websocket closed.")));
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("Timed out opening CDP websocket.")), 10000);
       this.ws.addEventListener("open", () => {
@@ -162,6 +175,19 @@ export class CdpSession {
         reject(new Error("CDP websocket error."));
       });
     });
+  }
+
+  rejectPending(error) {
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(error);
+    }
+    this.pending.clear();
+    for (const { reject, timer } of this.waiters) {
+      clearTimeout(timer);
+      reject(error);
+    }
+    this.waiters = [];
   }
 
   handleMessage(raw) {
@@ -200,7 +226,8 @@ export class CdpSession {
     });
   }
 
-  close() {
+  close(reason = "CDP session closed.") {
+    this.rejectPending(new Error(reason));
     if (this.ws) this.ws.close();
   }
 
@@ -358,6 +385,36 @@ async function withCdpTabLock({ baseUrl, tabId }, fn) {
   }
 }
 
+async function withLockedCdpTab({ baseUrl = defaultCdpBaseUrl(), tab, lockTimeoutMs = 120000 }, fn) {
+  if (!tab?.webSocketDebuggerUrl) throw new Error("Selected CDP tab does not expose webSocketDebuggerUrl.");
+  const key = cdpLockKey(baseUrl, tab.id);
+  return withCdpTabLock({ baseUrl, tabId: tab.id }, async () => {
+    const session = new CdpSession(tab.webSocketDebuggerUrl);
+    let timedOut = false;
+    let timer = null;
+    try {
+      await session.connect();
+      timer = setTimeout(() => {
+        timedOut = true;
+        session.close(`CDP_TAB_OPERATION_TIMEOUT: ${key}`);
+      }, lockTimeoutMs);
+      await session.send("Runtime.enable");
+      await session.send("Page.enable");
+      const result = await fn(session);
+      if (timedOut) throw new Error(`CDP_TAB_OPERATION_TIMEOUT: ${key}`);
+      return result;
+    } catch (error) {
+      if (timedOut && !error.message.startsWith("CDP_TAB_OPERATION_TIMEOUT")) {
+        throw new Error(`CDP_TAB_OPERATION_TIMEOUT: ${key}: ${error.message}`);
+      }
+      throw error;
+    } finally {
+      if (timer) clearTimeout(timer);
+      session.close();
+    }
+  });
+}
+
 export async function sendCdpMessage({
   baseUrl = defaultCdpBaseUrl(),
   tabId,
@@ -372,7 +429,7 @@ export async function sendCdpMessage({
   const tab = await findCdpTab({ baseUrl: normalized, tabId });
   assertGeminiTab(tab);
   const encodedMessage = Buffer.from(message, "utf8").toString("base64");
-  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+  return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeSend = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
     if (stateBeforeSend.isGenerating && !force) {
       return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeSend };
@@ -411,20 +468,21 @@ export async function sendCdpMessage({
     })()`);
     await sleep(800);
     const stateAfterSubmit = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
-    const ownTurnAppeared = stateAfterSubmit.lastUserText.includes(message) ||
-      stateAfterSubmit.turnCount > stateBeforeSend.turnCount;
+    const ownTurnVerification = verifyOwnUserTurn({ beforeState: stateBeforeSend, afterState: stateAfterSubmit, message });
+    const ownTurnAppeared = ownTurnVerification.ok;
     return {
       ok: clicked.ok && ownTurnAppeared,
       errorCode: clicked.ok && ownTurnAppeared ? undefined : "GEMINI_SUBMIT_VERIFY_FAILED",
       tab,
       submitted: clicked.ok,
       ownTurnAppeared,
+      ownTurnVerification,
       write,
       clicked,
       stateBeforeSend,
       stateAfterSubmit,
     };
-  }));
+  });
 }
 
 export async function sendCdpMessageAndWait({
@@ -437,7 +495,12 @@ export async function sendCdpMessageAndWait({
   ...sendOptions
 } = {}) {
   const sent = await sendCdpMessage({ baseUrl, tabId, message, submit: true, ...sendOptions });
-  if (!sent.ok) return { ...sent, wait: null };
+  if (!sent.ok) {
+    const errorCode = sent.errorCode === "GEMINI_SUBMIT_VERIFY_FAILED"
+      ? "GEMINI_OWN_TURN_WAIT_TIMEOUT"
+      : sent.errorCode;
+    return { ...sent, ok: false, errorCode, wait: null };
+  }
   const start = Date.now();
   let lastState = null;
   let candidateHash = "";
@@ -466,7 +529,9 @@ export async function sendCdpMessageAndWait({
   }
   return {
     ok: false,
-    errorCode: "GEMINI_REPLY_WAIT_TIMEOUT",
+    errorCode: lastState?.lastAssistantTurnIndex > lastState?.lastUserTurnIndex
+      ? "GEMINI_ASSISTANT_STABILITY_TIMEOUT"
+      : "GEMINI_ASSISTANT_TURN_WAIT_TIMEOUT",
     tab: sent.tab,
     sent,
     wait: { ok: false, elapsedMs: Date.now() - start },
@@ -487,13 +552,17 @@ export async function uploadCdpFile({
   if (!filePath) throw new Error("filePath is required.");
   const fileInfo = await stat(filePath);
   if (!fileInfo.isFile()) throw new Error("filePath must point to a file.");
+  const fileSafety = await verifyLocalUploadFile(filePath);
+  if (!fileSafety.ok) {
+    return { ok: false, errorCode: fileSafety.errorCode, fileSafety };
+  }
 
   const normalized = normalizeBaseUrl(baseUrl);
   const tab = await findCdpTab({ baseUrl: normalized, tabId });
   assertGeminiTab(tab);
   const fileName = path.basename(filePath);
 
-  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+  return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeUpload = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
     if (stateBeforeUpload.isGenerating && !force) {
       return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeUpload };
@@ -509,8 +578,9 @@ export async function uploadCdpFile({
       fileLength: fileInfo.size,
       stateBeforeUpload,
       stateAfterUpload,
+      fileSafety,
     };
-  }));
+  });
 }
 
 async function uploadViaFileChooserInterception(session, filePath, fileName, waitForUploadMs) {
@@ -651,7 +721,7 @@ export async function removeCdpAttachments({
   assertGeminiTab(tab);
   const filterText = (attachmentNameContains ?? "").toLowerCase();
 
-  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+  return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeRemove = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
     const removed = await evaluateCdp(session, `(() => {
       ${geminiDomAdapterScript()}
@@ -709,19 +779,29 @@ export async function removeCdpAttachments({
       stateBeforeRemove,
       stateAfterRemove,
     };
-  }));
+  });
 }
 
-function githubRepositoryKey(repoUrl) {
+export function parseGithubRepositoryUrl(repoUrl) {
   try {
     const parsed = new URL(repoUrl);
-    if (parsed.hostname !== "github.com" && !parsed.hostname.endsWith(".github.com")) return "";
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname !== "github.com" && hostname !== "www.github.com") {
+      return { ok: false, errorCode: "GEMINI_INVALID_GITHUB_REPOSITORY_URL", reason: "HOST_NOT_GITHUB" };
+    }
     const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
-    if (parts.length < 2) return "";
-    return `${parts[0]}/${parts[1]}`.toLowerCase();
+    if (parts.length < 2 || !parts[0] || !parts[1]) {
+      return { ok: false, errorCode: "GEMINI_INVALID_GITHUB_REPOSITORY_URL", reason: "OWNER_OR_REPO_MISSING" };
+    }
+    return { ok: true, owner: parts[0], repo: parts[1], key: `${parts[0]}/${parts[1]}`.toLowerCase() };
   } catch {
-    return "";
+    return { ok: false, errorCode: "GEMINI_INVALID_GITHUB_REPOSITORY_URL", reason: "URL_PARSE_FAILED" };
   }
+}
+
+export function githubRepositoryKey(repoUrl) {
+  const parsed = parseGithubRepositoryUrl(repoUrl);
+  return parsed.ok ? parsed.key : "";
 }
 
 export async function importCdpCodeRepository({
@@ -734,14 +814,15 @@ export async function importCdpCodeRepository({
   lockTimeoutMs = 120000,
 } = {}) {
   if (!repoUrl) throw new Error("repoUrl is required.");
-  const repositoryKey = githubRepositoryKey(repoUrl);
-  if (!repositoryKey) throw new Error("repoUrl must be a GitHub repository URL.");
+  const repository = parseGithubRepositoryUrl(repoUrl);
+  if (!repository.ok) throw new Error(repository.errorCode);
+  const repositoryKey = repository.key;
 
   const normalized = normalizeBaseUrl(baseUrl);
   const tab = await findCdpTab({ baseUrl: normalized, tabId });
   assertGeminiTab(tab);
 
-  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+  return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeImport = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
     if (stateBeforeImport.isGenerating && !force) {
       return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeImport };
@@ -768,6 +849,9 @@ export async function importCdpCodeRepository({
     await sleep(2500);
 
     const consent = await handleGithubConsentDialog(session, { allowGithubConnect });
+    if (consent.present && !consent.handled) {
+      return { ok: false, errorCode: consent.errorCode ?? "GEMINI_GITHUB_CONSENT_REQUIRED", tab, clicked, wrote, firstImport, consent, stateBeforeImport };
+    }
     if (consent.handled) {
       await sleep(1000);
       const secondImport = await clickImportRepositoryButton(session);
@@ -790,7 +874,7 @@ export async function importCdpCodeRepository({
       stateBeforeImport,
       stateAfterImport,
     };
-  }));
+  });
 }
 
 async function openCodeImportDialog(session) {
@@ -858,7 +942,28 @@ async function handleGithubConsentDialog(session, { allowGithubConnect = false }
     const buttons = [...dialog.querySelectorAll("button")]
       .filter((el) => Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
     if (buttons.length === 0) return { handled: false, present: true, errorCode: "CONSENT_BUTTON_NOT_FOUND" };
-    const button = buttons[${allowGithubConnect ? "buttons.length - 1" : "0"}];
+    const textOf = (el) => (el?.innerText || el?.textContent || el?.value || "").replace(/\\s+/g, " ").trim();
+    const labelOf = (el) => [
+      el.getAttribute("aria-label") || "",
+      el.getAttribute("title") || "",
+      textOf(el)
+    ].join(" ").toLowerCase();
+    const declinePattern = /cancel|decline|not now|no thanks|close|\\u0e22\\u0e01\\u0e40\\u0e25\\u0e34\\u0e01|\\u0e44\\u0e21\\u0e48\\u0e40\\u0e1b\\u0e47\\u0e19\\u0e44\\u0e23|\\u0e44\\u0e21\\u0e48\\u0e43\\u0e0a\\u0e48\\u0e15\\u0e2d\\u0e19\\u0e19\\u0e35\\u0e49/;
+    const connectPattern = /connect|allow|continue|authorize|\\u0e40\\u0e0a\\u0e37\\u0e48\\u0e2d\\u0e21\\u0e15\\u0e48\\u0e2d|\\u0e2d\\u0e19\\u0e38\\u0e0d\\u0e32\\u0e15|\\u0e14\\u0e33\\u0e40\\u0e19\\u0e34\\u0e19\\u0e01\\u0e32\\u0e23\\u0e15\\u0e48\\u0e2d/;
+    const pattern = ${allowGithubConnect ? "connectPattern" : "declinePattern"};
+    const matches = buttons
+      .map((button) => ({ button, label: labelOf(button) }))
+      .filter((entry) => pattern.test(entry.label));
+    if (matches.length !== 1) {
+      return {
+        handled: false,
+        present: true,
+        errorCode: matches.length === 0 ? "GEMINI_GITHUB_CONSENT_REQUIRED" : "GEMINI_GITHUB_CONSENT_AMBIGUOUS",
+        action: ${JSON.stringify(allowGithubConnect ? "connect" : "decline")},
+        buttonLabels: buttons.map((button) => labelOf(button))
+      };
+    }
+    const button = matches[0].button;
     const rect = button.getBoundingClientRect();
     return {
       handled: true,
@@ -870,6 +975,7 @@ async function handleGithubConsentDialog(session, { allowGithubConnect = false }
       ariaLabel: button.getAttribute("aria-label") || ""
     };
   })()`);
+  if (target.present && !target.handled && !allowGithubConnect) return target;
   if (target.handled && target.x != null && target.y != null) {
     await dispatchMouseClick(session, target);
   }

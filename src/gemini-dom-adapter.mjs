@@ -16,6 +16,18 @@ export function isElementDisabled(el) {
   return !el || Boolean(el.disabled) || el.getAttribute?.("aria-disabled") === "true";
 }
 
+export function isLikelyVisible(el) {
+  if (!el || el.hidden || el.getAttribute?.("aria-hidden") === "true") return false;
+  const style = el.getAttribute?.("style") || "";
+  if (/(^|;)\s*display\s*:\s*none/i.test(style) || /(^|;)\s*visibility\s*:\s*hidden/i.test(style)) {
+    return false;
+  }
+  if (typeof el.offsetWidth === "number" || typeof el.offsetHeight === "number" || el.getClientRects) {
+    return Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects?.().length);
+  }
+  return true;
+}
+
 export function findComposer(doc = document) {
   const editors = [
     ...doc.querySelectorAll('.ql-editor[contenteditable="true"][role="textbox"], [role="textbox"][contenteditable="true"]'),
@@ -34,8 +46,29 @@ export function findSendButton(doc = document) {
 }
 
 export function isGeminiGenerating(doc = document) {
-  return [...doc.querySelectorAll("button, [role=button]")]
-    .some((el) => /stop/i.test(labelOf(el)));
+  const controls = [
+    ...doc.querySelectorAll("button, [role=button]"),
+  ].filter((el) => isLikelyVisible(el) && !isElementDisabled(el));
+  return controls.some((el) => {
+    const label = [
+      el?.getAttribute?.("aria-label") || "",
+      el?.getAttribute?.("title") || "",
+      el?.getAttribute?.("data-test-id") || "",
+      el?.getAttribute?.("data-testid") || "",
+    ].join(" ").toLowerCase();
+    const testId = [
+      el.getAttribute?.("data-test-id") || "",
+      el.getAttribute?.("data-testid") || "",
+      el.getAttribute?.("class") || "",
+    ].join(" ").toLowerCase();
+    const iconText = textOf(el.querySelector?.("mat-icon, .mat-icon")).toLowerCase();
+    const hasStopIcon = Boolean(el.querySelector?.('svg[aria-label*="stop" i], [data-icon*="stop" i]')) ||
+      /stop|\u0e2b\u0e22\u0e38\u0e14/.test(iconText);
+    return /stop|interrupt|cancel/.test(label) ||
+      /\u0e2b\u0e22\u0e38\u0e14|\u0e22\u0e01\u0e40\u0e25\u0e34\u0e01/.test(label) ||
+      /stop|interrupt|cancel/.test(testId) ||
+      hasStopIcon;
+  });
 }
 
 export function stripUserPrefix(text) {
@@ -214,6 +247,7 @@ export function geminiDomAdapterScript() {
       const textOf = ${textOf.toString()};
       const labelOf = ${labelOf.toString()};
       const isElementDisabled = ${isElementDisabled.toString()};
+      const isLikelyVisible = ${isLikelyVisible.toString()};
       const findComposer = ${findComposer.toString()};
       const findSendButton = ${findSendButton.toString()};
       const isGeminiGenerating = ${isGeminiGenerating.toString()};
@@ -228,6 +262,7 @@ export function geminiDomAdapterScript() {
         textOf,
         labelOf,
         isElementDisabled,
+        isLikelyVisible,
         findComposer,
         findSendButton,
         isGeminiGenerating,

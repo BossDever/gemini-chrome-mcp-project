@@ -35,7 +35,9 @@ needed before treating send-and-wait as stable.
 - Add per-tab write locks.
 
 Status: implemented for the first milestone. `send_and_wait` still needs more
-live fixtures because Gemini response timing can differ from ChatGPT.
+live fixtures because Gemini response timing can differ from ChatGPT. Current
+hardening includes per-tab locked CDP operations with timeout cleanup, strict
+own-turn verification, and phase-specific wait diagnostics.
 
 ## Phase 4: Files And Safety
 
@@ -45,8 +47,9 @@ live fixtures because Gemini response timing can differ from ChatGPT.
   user data.
 
 Status: upload/remove is implemented through CDP file chooser interception and
-in-tab mouse events. Next hardening step is stricter file safety policy and more
-attachment fixtures.
+in-tab mouse events. File safety now records SHA-256/size metadata and blocks
+executable-style extensions by default. Next hardening step is more attachment
+fixtures.
 
 ## Phase 5: Code Repository Import
 
@@ -54,7 +57,9 @@ attachment fixtures.
 - Decline GitHub account connection by default.
 - Treat the resulting GitHub preview as a pending attachment and support remove.
 
-Status: implemented and live-tested with this repo.
+Status: implemented and live-tested with this repo. Current hardening includes
+GitHub URL parsing and fail-closed consent matching instead of button-order
+clicking.
 
 ## Avoid Initially
 

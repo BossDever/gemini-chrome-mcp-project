@@ -35,12 +35,17 @@ The stable path starts with tab binding and read/state tools. `gemini_cdp_send`
 supports `messageBase64` so Thai and unusual symbols do not pass through lossy
 shell encoding. `gemini_cdp_send_and_wait` exists, but should be treated as
 early hardening work until more live Gemini response fixtures are collected.
+Write workflows use per-tab CDP locks with operation timeouts and session
+cleanup. Submitted messages are verified against the advanced user turn text
+instead of accepting any turn count change.
 `gemini_cdp_upload_file` and `gemini_cdp_remove_attachments` use CDP file
 chooser interception and in-tab mouse events, so they do not take over the
-Windows mouse cursor.
+Windows mouse cursor. Uploads are checked for file type, size, SHA-256, and
+blocked executable-style extensions before Gemini sees the file.
 `gemini_cdp_import_code_repository` automates Gemini's "Import code" GitHub URL
 workflow and declines GitHub account connection by default unless explicitly
-allowed.
+allowed. GitHub consent matching is fail-closed and repository URLs are parsed
+as GitHub URLs before any UI action.
 
 Run checks with:
 
