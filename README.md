@@ -32,6 +32,7 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_remove_attachments`
 - `gemini_cdp_send`
 - `gemini_cdp_send_and_wait`
+- `gemini_cdp_save_generated_image`
 
 The stable path starts with tab binding and read/state tools. `gemini_cdp_send`
 supports `messageBase64` so Thai and unusual symbols do not pass through lossy
@@ -53,6 +54,11 @@ workflows. It reports visible images, likely generated images, and download-like
 controls without clicking them. It also reports Gemini image placeholders such
 as `[Image: ...]` when the image tool produces a textual placeholder instead of
 a downloadable file.
+`gemini_cdp_save_generated_image` saves a visible generated image from the bound
+tab. It tries source bytes first and falls back to canvas PNG when Gemini uses a
+blob URL that cannot be fetched directly. The result includes file path, MIME,
+dimensions, SHA-256, candidate details, and warnings such as
+`CANVAS_FALLBACK_USED`.
 `gemini_cdp_select_toolbox_mode` can select Gemini toolbar modes such as
 `image`, `video`, `music`, or `canvas` before sending a prompt.
 

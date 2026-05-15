@@ -3,6 +3,10 @@ import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { verifyLocalUploadFile } from "./file-safety.mjs";
 import { geminiDomAdapterScript } from "./gemini-dom-adapter.mjs";
+import {
+  geminiGeneratedImageScript,
+  saveImageArtifactFromPage,
+} from "./image-artifact-saver.mjs";
 
 const DEFAULT_CDP_BASE_URL = "http://127.0.0.1:9222";
 const cdpQueues = new Map();
@@ -466,6 +470,45 @@ export async function listCdpArtifacts({
       };
     })()`, 10000);
     return { ok: true, tab, artifacts };
+  });
+}
+
+export async function saveCdpGeneratedImage({
+  baseUrl = defaultCdpBaseUrl(),
+  tabId,
+  outputDir,
+  fileNamePrefix = "gemini-generated-image",
+  which = "newest",
+  index = 0,
+  prefer = "auto",
+  maxPixels = 4096 * 4096,
+  waitForImageMs = 30000,
+  dryRun = false,
+  lockTimeoutMs = 120000,
+} = {}) {
+  const normalized = normalizeBaseUrl(baseUrl);
+  const tab = await findCdpTab({ baseUrl: normalized, tabId });
+  assertGeminiTab(tab);
+  return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
+    const saved = await saveImageArtifactFromPage({
+      evaluateCdp,
+      session,
+      outputDir,
+      fileNamePrefix,
+      dryRun,
+      timeoutMs: Math.max(waitForImageMs + 15000, 60000),
+      script: geminiGeneratedImageScript({
+        which,
+        index,
+        prefer,
+        maxPixels,
+        waitForImageMs,
+      }),
+    });
+    return {
+      ...saved,
+      tab,
+    };
   });
 }
 
