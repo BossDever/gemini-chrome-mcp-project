@@ -221,9 +221,12 @@ answer body more cleanly.
 </structured-content-container>
 ```
 
-The `processing-state-visible` class appeared while the response was still
-processing. Treat that as a possible generating/streaming signal, but verify with
-more fixtures before relying on it.
+The `processing-state-visible` class appeared on response content, but a later
+live state check showed it can remain after the answer is effectively usable. Do
+not use that class alone as a generating signal. Page-level
+`mat-progress-spinner` elements can also represent side-nav/history loading, not
+model generation. Prefer explicit stop controls until response-scoped progress
+selectors are verified.
 
 ### Turn Extraction Guidance
 

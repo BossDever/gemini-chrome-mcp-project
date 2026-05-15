@@ -1,6 +1,6 @@
 # Gemini Chrome MCP
 
-Workspace for a separate Gemini-specific Chrome MCP server.
+Separate Gemini-specific Chrome MCP server.
 
 This project should reuse the proven patterns from
 `../chatgpt-chrome-mcp-project` without mixing provider-specific code:
@@ -13,6 +13,32 @@ This project should reuse the proven patterns from
 - metadata-only audit logs
 - file safety checks
 - operations docs and known limitations
+
+## Current Milestone
+
+The first implementation milestone is CDP-only and provider-specific:
+
+- `chrome_cdp_status`
+- `chrome_cdp_list_tabs`
+- `chrome_cdp_open_tab`
+- `gemini_cdp_bind_tab`
+- `gemini_cdp_get_bound_tab`
+- `gemini_cdp_get_state`
+- `gemini_cdp_read`
+- `gemini_cdp_send`
+- `gemini_cdp_send_and_wait`
+
+The stable path starts with tab binding and read/state tools. `gemini_cdp_send`
+supports `messageBase64` so Thai and unusual symbols do not pass through lossy
+shell encoding. `gemini_cdp_send_and_wait` exists, but should be treated as
+early hardening work until more live Gemini response fixtures are collected.
+
+Run checks with:
+
+```powershell
+npm run check
+npm run smoke:mcp -- --require-cdp --require-binding
+```
 
 ## Initial Direction
 

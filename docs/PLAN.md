@@ -24,6 +24,9 @@ provider-specific and independent from the stable ChatGPT MCP project.
 - Add DOM fixture tests and tool-registration tests.
 - Add `npm run check` and `npm run smoke:mcp`.
 
+Status: mostly implemented for the first milestone. More fixtures are still
+needed before treating send-and-wait as stable.
+
 ## Phase 3: Write Workflow
 
 - Implement `gemini_cdp_send` only after state extraction is reliable.
