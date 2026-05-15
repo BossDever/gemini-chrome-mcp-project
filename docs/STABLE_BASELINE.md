@@ -30,9 +30,10 @@ npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
+npm run smoke:mcp -- --require-cdp --require-binding --generate-image-save
 ```
 
-Current tests: 20/20.
+Current tests: 25/25.
 
 ## Known Boundaries
 

@@ -33,6 +33,7 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_send`
 - `gemini_cdp_send_and_wait`
 - `gemini_cdp_save_generated_image`
+- `gemini_cdp_generate_image_and_save`
 
 The stable path starts with tab binding and read/state tools. `gemini_cdp_send`
 supports `messageBase64` so Thai and unusual symbols do not pass through lossy
@@ -59,6 +60,10 @@ tab. It tries source bytes first and falls back to canvas PNG when Gemini uses a
 blob URL that cannot be fetched directly. The result includes file path, MIME,
 dimensions, SHA-256, candidate details, and warnings such as
 `CANVAS_FALLBACK_USED`.
+`gemini_cdp_generate_image_and_save` is the one-call image workflow: it selects
+image mode, sends the prompt, waits for a new generated image artifact, saves
+it, and returns file metadata. Use this instead of manually chaining mode
+selection, send, artifact polling, and save calls.
 `gemini_cdp_select_toolbox_mode` can select Gemini toolbar modes such as
 `image`, `video`, `music`, or `canvas` before sending a prompt.
 
@@ -69,7 +74,17 @@ npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
+npm run smoke:mcp -- --require-cdp --require-binding --generate-image-save
 ```
+
+The `--generate-image-save` smoke is intentionally optional because it creates a
+real Gemini image and may consume quota or wait on provider-side generation.
+
+## Operations
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the day-to-day runbook and
+[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for remaining provider
+constraints.
 
 ## Initial Direction
 

@@ -9,6 +9,7 @@ const rawArgs = process.argv.slice(2);
 const requireCdp = args.has("--require-cdp");
 const requireBinding = args.has("--require-binding");
 const dryRunSend = args.has("--dry-run-send");
+const generateImageSave = args.has("--generate-image-save");
 const uploadRemoveFile = valueAfterFlag(rawArgs, "--upload-remove-file");
 
 const transport = new StdioClientTransport({
@@ -45,10 +46,11 @@ async function clearComposerDraft(tabId) {
 try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.equal(names.length, 15, "unexpected MCP tool count");
+  assert.equal(names.length, 16, "unexpected MCP tool count");
   assert(names.includes("gemini_cdp_get_state"), "missing gemini_cdp_get_state");
   assert(names.includes("gemini_cdp_list_artifacts"), "missing gemini_cdp_list_artifacts");
   assert(names.includes("gemini_cdp_save_generated_image"), "missing gemini_cdp_save_generated_image");
+  assert(names.includes("gemini_cdp_generate_image_and_save"), "missing gemini_cdp_generate_image_and_save");
   assert(names.includes("gemini_cdp_select_toolbox_mode"), "missing gemini_cdp_select_toolbox_mode");
   assert(names.includes("gemini_cdp_import_code_repository"), "missing gemini_cdp_import_code_repository");
   assert(names.includes("gemini_cdp_read"), "missing gemini_cdp_read");
@@ -65,6 +67,7 @@ try {
   let structured = null;
   let dryRun = null;
   let uploadRemove = null;
+  let imageSave = null;
   if (cdpAvailable) {
     bound = await client.callTool({ name: "gemini_cdp_get_bound_tab", arguments: { sessionName: "default" } });
     const hasBoundTab = bound.structuredContent?.ok === true && Boolean(bound.structuredContent?.bound?.tabId);
@@ -138,6 +141,36 @@ try {
           attachmentCountAfterRemove: after.structuredContent?.state?.attachmentCount ?? null,
         };
       }
+      if (generateImageSave) {
+        const runId = `gemini-smoke-${Date.now()}`;
+        const generated = await client.callTool({
+          name: "gemini_cdp_generate_image_and_save",
+          arguments: {
+            sessionName: "default",
+            strictBinding: true,
+            messageBase64: Buffer.from(
+              `Create a square image for an MCP smoke test with the exact text "${runId}" centered.`,
+              "utf8",
+            ).toString("base64"),
+            fileNamePrefix: runId,
+            waitForImageMs: 300000,
+            pollMs: 3000,
+          },
+        });
+        assert.equal(generated.structuredContent?.ok, true, "generate image/save smoke failed");
+        assert.equal(generated.isError ?? false, false, "generate image/save smoke returned an MCP error");
+        assert(generated.structuredContent?.filePath, "generate image/save smoke did not return a file path");
+        assert((generated.structuredContent?.byteLength ?? 0) > 0, "saved image is empty");
+        imageSave = {
+          ok: true,
+          filePath: generated.structuredContent.filePath,
+          method: generated.structuredContent.savedMethod,
+          byteLength: generated.structuredContent.byteLength,
+          width: generated.structuredContent.width,
+          height: generated.structuredContent.height,
+          warningCodes: (generated.structuredContent.warnings ?? []).map((warning) => warning.code),
+        };
+      }
     }
   }
 
@@ -150,6 +183,7 @@ try {
     structuredReadOk: structured?.structuredContent?.ok ?? null,
     dryRunSend: dryRun,
     uploadRemove,
+    imageSave,
     warnings: state?.structuredContent?.bindingWarnings?.map((warning) => warning.code) ?? [],
   }, null, 2));
 } finally {

@@ -184,6 +184,8 @@ export function geminiGeneratedImageScript({
               srcKind: candidate.srcKind,
               metadataPreserved: true,
               originalMimePreserved: true,
+              originalBytesPreserved: true,
+              canvasTainted: false,
               candidate,
               candidateCount: candidates.length,
               candidates,
@@ -217,13 +219,24 @@ export function geminiGeneratedImageScript({
           srcKind: candidate.srcKind,
           metadataPreserved: false,
           originalMimePreserved: false,
+          originalBytesPreserved: false,
+          canvasTainted: false,
           candidate,
           candidateCount: candidates.length,
           candidates,
           warnings: [...warnings, { code: "CANVAS_FALLBACK_USED" }],
         };
       } catch (error) {
-        return { ok: false, errorCode: "CANVAS_EXPORT_FAILED", error: error.message, candidate, candidateCount: candidates.length, candidates, warnings };
+        return {
+          ok: false,
+          errorCode: "CANVAS_EXPORT_FAILED",
+          error: error.message,
+          canvasTainted: error?.name === "SecurityError",
+          candidate,
+          candidateCount: candidates.length,
+          candidates,
+          warnings,
+        };
       }
     })()
   `;

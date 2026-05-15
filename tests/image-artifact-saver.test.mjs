@@ -23,4 +23,6 @@ test("Gemini generated image script includes blob scoring and canvas fallback", 
   assert.match(script, /gemini_blob/);
   assert.match(script, /download-generated-image-button/);
   assert.match(script, /canvas_png_fallback/);
+  assert.match(script, /originalBytesPreserved/);
+  assert.match(script, /canvasTainted/);
 });

@@ -1,13 +1,17 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
+import { appendAuditLog } from "./audit-log.mjs";
 import {
   cdpStatus,
   defaultCdpBaseUrl,
   findCdpTab,
+  generateCdpImageAndSave,
   getCdpState,
   importCdpCodeRepository,
   listCdpArtifacts,
@@ -27,6 +31,10 @@ import {
   resolveBoundCdpTarget,
   writeBoundCdpTarget,
 } from "./cdp-session-manager.mjs";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const auditDir = path.join(__dirname, "..", ".gemini-chrome-mcp", "audit");
 
 function sha256(text) {
   return createHash("sha256").update(text ?? "", "utf8").digest("hex");
@@ -57,6 +65,42 @@ function resolveMessageInput({ message, messageBase64, allowSuspiciousText = fal
     throw new Error("SUSPICIOUS_ENCODING_LOSS");
   }
   return resolved;
+}
+
+async function auditCdpWrite(tool, result, context = {}) {
+  try {
+    const tab = result?.tab ?? context.tab ?? null;
+    const binding = result?.binding ?? context.binding ?? null;
+    await appendAuditLog(
+      {
+        tool,
+        requestId: result?.requestId ?? context.requestId,
+        sessionName: result?.sessionName ?? context.sessionName,
+        tabId: tab?.id ?? result?.tabId ?? context.tabId ?? binding?.tabId,
+        baseUrl: context.baseUrl ?? binding?.baseUrl,
+        url: tab?.url,
+        ok: Boolean(result?.ok),
+        errorCode: result?.errorCode,
+        durationMs: result?.durationMs,
+        dryRun: result?.dryRun,
+        submit: context.submit,
+        messageHash: result?.messageHash ?? context.messageHash,
+        fileSha256: result?.sha256 ?? context.fileSha256,
+        fileExtension: result?.extension ?? context.fileExtension,
+        fileLength: result?.byteLength ?? context.fileLength,
+        savedMethod: result?.savedMethod,
+        imageWidth: result?.width,
+        imageHeight: result?.height,
+        attachmentNameContains: context.attachmentNameContains,
+        removeAll: context.removeAll,
+        maxAttachments: context.maxAttachments,
+        bindingWarningCodes: (result?.bindingWarnings ?? context.bindingWarnings ?? []).map((warning) => warning.code),
+      },
+      { auditDir },
+    );
+  } catch {
+    // Audit is best-effort and must never change tool behavior.
+  }
 }
 
 const server = new McpServer({ name: "gemini-chrome-mcp", version: "0.1.0" });
@@ -267,8 +311,10 @@ server.registerTool(
   },
   async ({ baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, outputDir, fileNamePrefix = "gemini-generated-image", which = "newest", index = 0, prefer = "auto", maxPixels = 4096 * 4096, waitForImageMs = 30000, dryRun = false, lockTimeoutMs = 120000, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId };
     try {
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const saved = await saveCdpGeneratedImage({
         baseUrl: target.baseUrl,
         tabId: target.tabId,
@@ -283,9 +329,72 @@ server.registerTool(
         lockTimeoutMs,
       });
       const result = withMeta({ ...saved, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_save_generated_image", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !saved.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_SAVE_GENERATED_IMAGE_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_save_generated_image", result, auditContext);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_generate_image_and_save",
+  {
+    title: "Generate a Gemini image and save it",
+    inputSchema: {
+      message: z.string().optional(),
+      messageBase64: z.string().optional(),
+      allowSuspiciousText: z.boolean().optional(),
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      tabId: z.string().optional(),
+      useBoundTab: z.boolean().optional(),
+      strictBinding: z.boolean().optional(),
+      outputDir: z.string().optional(),
+      fileNamePrefix: z.string().optional(),
+      prefer: z.enum(["auto", "source", "canvas"]).optional(),
+      maxPixels: z.number().int().min(1).max(100000000).optional(),
+      waitForImageMs: z.number().int().min(10000).max(600000).optional(),
+      pollMs: z.number().int().min(500).max(30000).optional(),
+      selectImageMode: z.boolean().optional(),
+      dryRun: z.boolean().optional(),
+      force: z.boolean().optional(),
+      lockTimeoutMs: z.number().int().min(5000).max(600000).optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ message, messageBase64, allowSuspiciousText = false, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, outputDir, fileNamePrefix = "gemini-generated-image", prefer = "auto", maxPixels = 4096 * 4096, waitForImageMs = 300000, pollMs = 3000, selectImageMode = true, dryRun = false, force = false, lockTimeoutMs = 180000, requestId }) => {
+    const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId, submit: true };
+    try {
+      const resolvedMessage = resolveMessageInput({ message, messageBase64, allowSuspiciousText });
+      auditContext.messageHash = sha256(resolvedMessage);
+      const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
+      const generated = await generateCdpImageAndSave({
+        baseUrl: target.baseUrl,
+        tabId: target.tabId,
+        message: resolvedMessage,
+        outputDir,
+        fileNamePrefix,
+        prefer,
+        maxPixels,
+        waitForImageMs,
+        pollMs,
+        selectImageMode,
+        dryRun,
+        force,
+        lockTimeoutMs,
+      });
+      const result = withMeta({ ...generated, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_generate_image_and_save", result, auditContext);
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !generated.ok };
+    } catch (error) {
+      const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_GENERATE_IMAGE_AND_SAVE_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_generate_image_and_save", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },
@@ -309,13 +418,17 @@ server.registerTool(
   },
   async ({ mode, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, lockTimeoutMs = 30000, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId };
     try {
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const selected = await selectCdpToolboxMode({ baseUrl: target.baseUrl, tabId: target.tabId, mode, lockTimeoutMs });
       const result = withMeta({ ...selected, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_select_toolbox_mode", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !selected.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_SELECT_TOOLBOX_MODE_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_select_toolbox_mode", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },
@@ -341,13 +454,17 @@ server.registerTool(
   },
   async ({ repoUrl, waitForImportMs = 30000, allowGithubConnect = false, force = false, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId };
     try {
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const imported = await importCdpCodeRepository({ baseUrl: target.baseUrl, tabId: target.tabId, repoUrl, waitForImportMs, allowGithubConnect, force });
       const result = withMeta({ ...imported, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_import_code_repository", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !imported.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_IMPORT_CODE_REPOSITORY_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_import_code_repository", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },
@@ -373,14 +490,18 @@ server.registerTool(
   },
   async ({ attachmentNameContains, removeAll = false, maxAttachments = 10, waitMs = 10000, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId, attachmentNameContains, removeAll, maxAttachments };
     try {
       if (!attachmentNameContains && !removeAll) throw new Error("ATTACHMENT_FILTER_REQUIRED");
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const removed = await removeCdpAttachments({ baseUrl: target.baseUrl, tabId: target.tabId, attachmentNameContains, removeAll, maxAttachments, waitMs });
       const result = withMeta({ ...removed, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_remove_attachments", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !removed.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_REMOVE_ATTACHMENTS_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_remove_attachments", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },
@@ -405,13 +526,17 @@ server.registerTool(
   },
   async ({ filePath, waitForUploadMs = 15000, force = false, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId };
     try {
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const upload = await uploadCdpFile({ baseUrl: target.baseUrl, tabId: target.tabId, filePath, waitForUploadMs, force });
       const result = withMeta({ ...upload, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_upload_file", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !upload.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_UPLOAD_FILE_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_upload_file", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },
@@ -439,14 +564,19 @@ server.registerTool(
   },
   async ({ message, messageBase64, allowSuspiciousText = false, submit = true, replaceDraft = false, force = false, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId, submit };
     try {
       const resolvedMessage = resolveMessageInput({ message, messageBase64, allowSuspiciousText });
+      auditContext.messageHash = sha256(resolvedMessage);
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const sent = await sendCdpMessage({ baseUrl: target.baseUrl, tabId: target.tabId, message: resolvedMessage, submit, replaceDraft, force });
       const result = withMeta({ ...sent, messageHash: sha256(resolvedMessage), sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_send", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !sent.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_SEND_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_send", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },
@@ -476,14 +606,19 @@ server.registerTool(
   },
   async ({ message, messageBase64, allowSuspiciousText = false, replaceDraft = false, force = false, timeoutMs = 45000, pollMs = 1000, stableMs = 2500, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
     const startedAt = new Date().toISOString();
+    const auditContext = { sessionName, baseUrl, tabId, submit: true };
     try {
       const resolvedMessage = resolveMessageInput({ message, messageBase64, allowSuspiciousText });
+      auditContext.messageHash = sha256(resolvedMessage);
       const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      Object.assign(auditContext, { sessionName: target.sessionName, baseUrl: target.baseUrl, tabId: target.tabId, binding: target.binding, bindingWarnings: target.bindingWarnings });
       const result0 = await sendCdpMessageAndWait({ baseUrl: target.baseUrl, tabId: target.tabId, message: resolvedMessage, replaceDraft, force, timeoutMs, pollMs, stableMs });
       const result = withMeta({ ...result0, messageHash: sha256(resolvedMessage), sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_send_and_wait", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !result0.ok };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_SEND_AND_WAIT_FAILED", error: error.message }, { requestId, startedAt });
+      await auditCdpWrite("gemini_cdp_send_and_wait", result, auditContext);
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },

@@ -512,6 +512,128 @@ export async function saveCdpGeneratedImage({
   });
 }
 
+function artifactKey(image) {
+  return `${image?.srcPreview ?? ""}|${image?.naturalWidth ?? 0}x${image?.naturalHeight ?? 0}`;
+}
+
+export async function generateCdpImageAndSave({
+  baseUrl = defaultCdpBaseUrl(),
+  tabId,
+  message,
+  outputDir,
+  fileNamePrefix = "gemini-generated-image",
+  prefer = "auto",
+  maxPixels = 4096 * 4096,
+  waitForImageMs = 300000,
+  pollMs = 3000,
+  selectImageMode = true,
+  force = false,
+  dryRun = false,
+  lockTimeoutMs = 180000,
+} = {}) {
+  if (!message) throw new Error("message is required.");
+  const normalized = normalizeBaseUrl(baseUrl);
+  const tab = await findCdpTab({ baseUrl: normalized, tabId });
+  assertGeminiTab(tab);
+
+  const beforeArtifacts = await listCdpArtifacts({ baseUrl: normalized, tabId: tab.id, maxItems: 200 });
+  const beforeKeys = new Set((beforeArtifacts.artifacts?.images ?? []).map(artifactKey));
+  const selectedImageMode = selectImageMode
+    ? await selectCdpToolboxMode({ baseUrl: normalized, tabId: tab.id, mode: "image", lockTimeoutMs })
+    : { ok: true, skipped: true };
+  if (!selectedImageMode.ok) {
+    return {
+      ok: false,
+      errorCode: selectedImageMode.errorCode ?? "GEMINI_IMAGE_MODE_SELECT_FAILED",
+      tab,
+      beforeArtifacts,
+      selectedImageMode,
+    };
+  }
+
+  if (dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      wouldSubmit: true,
+      wouldSave: true,
+      tab,
+      beforeArtifacts,
+      selectedImageMode,
+      messageHash: sha256Text(message),
+    };
+  }
+
+  const sent = await sendCdpMessage({
+    baseUrl: normalized,
+    tabId: tab.id,
+    message,
+    submit: true,
+    replaceDraft: true,
+    force,
+    lockTimeoutMs,
+  });
+  if (!sent.ok) {
+    return {
+      ok: false,
+      errorCode: sent.errorCode ?? "GEMINI_IMAGE_PROMPT_SEND_FAILED",
+      tab,
+      beforeArtifacts,
+      selectedImageMode,
+      sent,
+    };
+  }
+
+  const deadline = Date.now() + waitForImageMs;
+  let latestArtifacts = null;
+  let newImages = [];
+  while (Date.now() < deadline) {
+    latestArtifacts = await listCdpArtifacts({ baseUrl: normalized, tabId: tab.id, maxItems: 200 });
+    const images = latestArtifacts.artifacts?.images ?? [];
+    newImages = images.filter((image) => image.likelyGenerated && !beforeKeys.has(artifactKey(image)));
+    if (newImages.length > 0) break;
+    await sleep(pollMs);
+  }
+
+  if (newImages.length === 0) {
+    return {
+      ok: false,
+      errorCode: "GEMINI_GENERATED_IMAGE_WAIT_TIMEOUT",
+      tab,
+      beforeArtifacts,
+      selectedImageMode,
+      sent,
+      latestArtifacts,
+      newImageCount: 0,
+    };
+  }
+
+  const saved = await saveCdpGeneratedImage({
+    baseUrl: normalized,
+    tabId: tab.id,
+    outputDir,
+    fileNamePrefix,
+    which: "newest",
+    prefer,
+    maxPixels,
+    waitForImageMs: Math.min(waitForImageMs, 60000),
+    dryRun: false,
+    lockTimeoutMs,
+  });
+  return {
+    ...saved,
+    ok: Boolean(saved.ok),
+    tab,
+    beforeArtifacts,
+    selectedImageMode,
+    sent,
+    latestArtifacts,
+    newImageCount: newImages.length,
+    newImages,
+    messageHash: sha256Text(message),
+  };
+}
+
 export async function selectCdpToolboxMode({
   baseUrl = defaultCdpBaseUrl(),
   tabId,
@@ -547,6 +669,7 @@ export async function selectCdpToolboxMode({
         el.innerText || el.textContent || "",
       ].join(" ").replace(/\\s+/g, " ").trim();
       const clickElement = (el) => {
+        el.scrollIntoView?.({ block: "center", inline: "center" });
         const rect = el.getBoundingClientRect();
         const x = rect.left + rect.width / 2;
         const y = rect.top + rect.height / 2;
@@ -555,9 +678,28 @@ export async function selectCdpToolboxMode({
         el.click();
       };
       const findItems = () => [...document.querySelectorAll("[role='menuitemcheckbox']")].filter(isVisible);
+      const composer = document.querySelector('.ql-editor[contenteditable="true"][role="textbox"], [role="textbox"][contenteditable="true"]');
+      composer?.scrollIntoView?.({ block: "center", inline: "center" });
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const selectedMode = [...document.querySelectorAll("button, [role='button'], [role='menuitemcheckbox']")]
+        .filter(isVisible)
+        .find((el) => {
+          const label = labelOf(el);
+          return /cancel selection|\\u0e22\\u0e01\\u0e40\\u0e25\\u0e34\\u0e01\\u0e01\\u0e32\\u0e23\\u0e40\\u0e25\\u0e37\\u0e2d\\u0e01/i.test(label) &&
+            labels[mode].some((pattern) => pattern.test(label));
+        });
+      if (selectedMode) {
+        return {
+          ok: true,
+          mode,
+          alreadySelected: true,
+          itemText: labelOf(selectedMode),
+          ariaChecked: selectedMode.getAttribute("aria-checked") || "true",
+        };
+      }
       let items = findItems();
       if (!items.length) {
-        const toolbox = [...document.querySelectorAll("button")]
+        const toolbox = document.querySelector("button.upload-card-button.open") || [...document.querySelectorAll("button")]
           .filter(isVisible)
           .find((button) => /tools|\\u0e40\\u0e04\\u0e23\\u0e37\\u0e48\\u0e2d\\u0e07\\u0e21\\u0e37\\u0e2d/i.test(labelOf(button)));
         if (!toolbox) return { ok: false, errorCode: "GEMINI_TOOLBOX_BUTTON_NOT_FOUND" };
