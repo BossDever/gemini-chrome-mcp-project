@@ -264,7 +264,7 @@ server.registerTool(
     },
     annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
   },
-  async ({ message, messageBase64, allowSuspiciousText = false, replaceDraft = false, force = false, timeoutMs = 120000, pollMs = 1000, stableMs = 2500, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
+  async ({ message, messageBase64, allowSuspiciousText = false, replaceDraft = false, force = false, timeoutMs = 45000, pollMs = 1000, stableMs = 2500, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
     const startedAt = new Date().toISOString();
     try {
       const resolvedMessage = resolveMessageInput({ message, messageBase64, allowSuspiciousText });

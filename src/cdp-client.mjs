@@ -401,7 +401,7 @@ export async function sendCdpMessageAndWait({
   baseUrl = defaultCdpBaseUrl(),
   tabId,
   message,
-  timeoutMs = 120000,
+  timeoutMs = 45000,
   pollMs = 1000,
   stableMs = 2500,
   ...sendOptions

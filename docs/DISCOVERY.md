@@ -15,6 +15,13 @@ title: Google Gemini
 tabId: 42E76C5740048DEEB510C18CF7DFB14D
 ```
 
+An offline saved Gemini HTML snapshot was also checked locally. It confirmed
+that selector strings such as `ql-editor`, `send-button`, `user-query`,
+`model-response`, `message-content`, and `mat-progress-spinner` are present in
+Gemini's rendered page assets. The snapshot itself is intentionally not copied
+into this repo because saved web pages can contain account/session metadata and
+large generated assets.
+
 ## Initial Page State
 
 The inspected page was the Gemini start screen, not an active conversation. It

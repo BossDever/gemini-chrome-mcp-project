@@ -20,6 +20,7 @@ parity with the ChatGPT MCP project, but the core architecture is in place:
 ```powershell
 npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
+npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
 ```
 
 Current tests: 8/8.
@@ -27,7 +28,8 @@ Current tests: 8/8.
 ## Known Boundaries
 
 - Upload/download tools are not implemented.
-- `gemini_cdp_send_and_wait` is early and needs more live fixtures. In one live
+- `gemini_cdp_send_and_wait` is early and needs more live fixtures. Its default
+  timeout is intentionally below common 60s MCP client timeouts. In one live
   test, Gemini accepted the user turn but did not return an assistant response
   before the MCP client timeout.
 - Generating detection currently uses explicit stop controls only. Page-level

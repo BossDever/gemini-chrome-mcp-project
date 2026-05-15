@@ -38,6 +38,7 @@ Run checks with:
 ```powershell
 npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
+npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
 ```
 
 ## Initial Direction
