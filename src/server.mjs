@@ -9,6 +9,7 @@ import {
   defaultCdpBaseUrl,
   findCdpTab,
   getCdpState,
+  importCdpCodeRepository,
   listCdpTabs,
   openCdpTab,
   readCdpPage,
@@ -204,6 +205,38 @@ server.registerTool(
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result };
     } catch (error) {
       const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_READ_FAILED", error: error.message }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_import_code_repository",
+  {
+    title: "Import GitHub repository to Gemini through CDP",
+    inputSchema: {
+      repoUrl: z.string(),
+      waitForImportMs: z.number().int().min(1000).max(120000).optional(),
+      allowGithubConnect: z.boolean().optional(),
+      force: z.boolean().optional(),
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      tabId: z.string().optional(),
+      useBoundTab: z.boolean().optional(),
+      strictBinding: z.boolean().optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  },
+  async ({ repoUrl, waitForImportMs = 30000, allowGithubConnect = false, force = false, baseUrl, sessionName = "default", tabId, useBoundTab = true, strictBinding = false, requestId }) => {
+    const startedAt = new Date().toISOString();
+    try {
+      const target = await resolveBoundCdpTarget({ baseUrl, tabId, useBoundTab, sessionName, strictBinding });
+      const imported = await importCdpCodeRepository({ baseUrl: target.baseUrl, tabId: target.tabId, repoUrl, waitForImportMs, allowGithubConnect, force });
+      const result = withMeta({ ...imported, sessionName: target.sessionName, binding: target.binding, bindingWarnings: target.bindingWarnings }, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !imported.ok };
+    } catch (error) {
+      const result = withMeta({ ok: false, errorCode: "GEMINI_CDP_IMPORT_CODE_REPOSITORY_FAILED", error: error.message }, { requestId, startedAt });
       return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
     }
   },

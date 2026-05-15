@@ -117,6 +117,37 @@ uploader-file-preview
 The cancel button contains the full filename in its `aria-label`, while the
 visible chip may truncate long names.
 
+## Code Import
+
+Gemini's upload menu includes:
+
+```text
+[data-test-id="code-import-button"]
+```
+
+Clicking it opens an Import code dialog with:
+
+```text
+[data-test-id="repo-url-input"]
+[data-test-id="import-repository-button"]
+```
+
+Live testing with
+`https://github.com/BossDever/gemini-chrome-mcp-project.git` showed Gemini
+validates the repo as `bossdever/gemini-chrome-mcp-project` and renders a
+pending GitHub attachment:
+
+```text
+[data-test-id="code-link-preview"]
+visible name: bossdever/...cp-project
+type: GitHub
+cancel aria-label: นำไฟล์ bossdever/gemini-chrome-mcp-project ออก
+```
+
+If Gemini asks to connect GitHub, decline by default for public repositories.
+That avoids granting account-level GitHub access unless the caller explicitly
+opts in.
+
 ## Visible Containers
 
 Observed top-level chat containers:

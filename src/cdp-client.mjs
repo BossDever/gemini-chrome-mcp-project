@@ -711,3 +711,188 @@ export async function removeCdpAttachments({
     };
   }));
 }
+
+function githubRepositoryKey(repoUrl) {
+  try {
+    const parsed = new URL(repoUrl);
+    if (parsed.hostname !== "github.com" && !parsed.hostname.endsWith(".github.com")) return "";
+    const parts = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/i, "").split("/");
+    if (parts.length < 2) return "";
+    return `${parts[0]}/${parts[1]}`.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+export async function importCdpCodeRepository({
+  baseUrl = defaultCdpBaseUrl(),
+  tabId,
+  repoUrl,
+  waitForImportMs = 30000,
+  allowGithubConnect = false,
+  force = false,
+  lockTimeoutMs = 120000,
+} = {}) {
+  if (!repoUrl) throw new Error("repoUrl is required.");
+  const repositoryKey = githubRepositoryKey(repoUrl);
+  if (!repositoryKey) throw new Error("repoUrl must be a GitHub repository URL.");
+
+  const normalized = normalizeBaseUrl(baseUrl);
+  const tab = await findCdpTab({ baseUrl: normalized, tabId });
+  assertGeminiTab(tab);
+
+  return withCdpTabLock({ baseUrl: normalized, tabId: tab.id }, () => withCdpTab(tab, async (session) => {
+    const stateBeforeImport = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    if (stateBeforeImport.isGenerating && !force) {
+      return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeImport };
+    }
+
+    const clicked = await openCodeImportDialog(session);
+    if (!clicked.ok) return { ok: false, tab, clicked, stateBeforeImport };
+
+    const wrote = await evaluateCdp(session, `(() => {
+      const input = document.querySelector('[data-test-id="repo-url-input"]');
+      if (!input) return { ok: false, errorCode: "REPO_URL_INPUT_NOT_FOUND" };
+      const repoUrl = ${JSON.stringify(repoUrl)};
+      input.focus();
+      input.value = repoUrl;
+      input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: repoUrl }));
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true, value: input.value };
+    })()`);
+    if (!wrote.ok) return { ok: false, tab, clicked, wrote, stateBeforeImport };
+
+    await sleep(800);
+    const firstImport = await clickImportRepositoryButton(session);
+    if (!firstImport.ok) return { ok: false, tab, clicked, wrote, firstImport, stateBeforeImport };
+    await sleep(2500);
+
+    const consent = await handleGithubConsentDialog(session, { allowGithubConnect });
+    if (consent.handled) {
+      await sleep(1000);
+      const secondImport = await clickImportRepositoryButton(session);
+      if (!secondImport.ok) return { ok: false, tab, clicked, wrote, firstImport, consent, secondImport, stateBeforeImport };
+    }
+
+    const attachment = await waitForRepositoryAttachment(session, repositoryKey, waitForImportMs);
+    const stateAfterImport = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
+    return {
+      ok: Boolean(attachment?.found),
+      errorCode: attachment?.found ? undefined : "GEMINI_REPOSITORY_ATTACHMENT_NOT_FOUND_AFTER_IMPORT",
+      tab,
+      repoUrl,
+      repositoryKey,
+      clicked,
+      wrote,
+      firstImport,
+      consent,
+      attachment,
+      stateBeforeImport,
+      stateAfterImport,
+    };
+  }));
+}
+
+async function openCodeImportDialog(session) {
+  const menuTarget = await evaluateCdp(session, `(() => {
+    const openButton = document.querySelector("button.upload-card-button.open");
+    if (!openButton) {
+      const codeButton = document.querySelector('[data-test-id="code-import-button"]');
+      if (codeButton) return { ok: true, target: "code_import_ready" };
+      return { ok: false, errorCode: "UPLOAD_MENU_BUTTON_NOT_FOUND" };
+    }
+    const rect = openButton.getBoundingClientRect();
+    return {
+      ok: true,
+      target: "open_menu",
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2
+    };
+  })()`);
+  if (!menuTarget.ok) return menuTarget;
+  if (menuTarget.target === "open_menu") {
+    await dispatchMouseClick(session, menuTarget);
+    await sleep(700);
+  }
+  const codeTarget = await evaluateCdp(session, `(() => {
+    const button = document.querySelector('[data-test-id="code-import-button"]');
+    if (!button) return { ok: false, errorCode: "CODE_IMPORT_BUTTON_NOT_FOUND" };
+    const rect = button.getBoundingClientRect();
+    return {
+      ok: true,
+      target: "code_import",
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      text: button.innerText || button.textContent || ""
+    };
+  })()`);
+  if (!codeTarget.ok) return codeTarget;
+  await dispatchMouseClick(session, codeTarget);
+  await sleep(1000);
+  return { ok: true, menuTarget, codeTarget };
+}
+
+async function clickImportRepositoryButton(session) {
+  const target = await evaluateCdp(session, `(() => {
+    const button = document.querySelector('[data-test-id="import-repository-button"]');
+    if (!button) return { ok: false, errorCode: "IMPORT_REPOSITORY_BUTTON_NOT_FOUND" };
+    const disabled = Boolean(button.disabled || button.getAttribute("aria-disabled") === "true");
+    const rect = button.getBoundingClientRect();
+    return {
+      ok: !disabled,
+      errorCode: disabled ? "IMPORT_REPOSITORY_BUTTON_DISABLED" : undefined,
+      disabled,
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      text: button.innerText || button.textContent || ""
+    };
+  })()`);
+  if (target.ok) await dispatchMouseClick(session, target);
+  return target;
+}
+
+async function handleGithubConsentDialog(session, { allowGithubConnect = false } = {}) {
+  const target = await evaluateCdp(session, `(() => {
+    const dialog = document.querySelector('[data-test-id="tool-consent-dialog"], .consent-dialog-container');
+    if (!dialog) return { handled: false, present: false };
+    const buttons = [...dialog.querySelectorAll("button")]
+      .filter((el) => Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+    if (buttons.length === 0) return { handled: false, present: true, errorCode: "CONSENT_BUTTON_NOT_FOUND" };
+    const button = buttons[${allowGithubConnect ? "buttons.length - 1" : "0"}];
+    const rect = button.getBoundingClientRect();
+    return {
+      handled: true,
+      present: true,
+      action: ${JSON.stringify(allowGithubConnect ? "connect" : "decline")},
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      text: button.innerText || button.textContent || "",
+      ariaLabel: button.getAttribute("aria-label") || ""
+    };
+  })()`);
+  if (target.handled && target.x != null && target.y != null) {
+    await dispatchMouseClick(session, target);
+  }
+  return target;
+}
+
+async function waitForRepositoryAttachment(session, repositoryKey, waitForImportMs) {
+  const deadline = Date.now() + waitForImportMs;
+  let attachment = null;
+  while (Date.now() < deadline) {
+    attachment = await evaluateCdp(session, `(() => {
+      ${geminiDomAdapterScript()}
+      const repositoryKey = ${JSON.stringify(repositoryKey)};
+      const candidates = geminiDomAdapter.extractAttachmentCandidates(document)
+        .filter((candidate) => {
+          const haystack = [candidate.name, candidate.text, candidate.removeLabel].join(" ").toLowerCase();
+          return haystack.includes(repositoryKey) ||
+            (haystack.includes("github") && haystack.includes(repositoryKey.split("/")[1]));
+        });
+      return { found: candidates.length > 0, repositoryKey, candidates };
+    })()`, 10000);
+    if (attachment?.found) break;
+    await sleep(500);
+  }
+  return attachment;
+}

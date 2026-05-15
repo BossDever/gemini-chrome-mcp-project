@@ -13,6 +13,7 @@ parity with the ChatGPT MCP project, but the core architecture is in place:
 - base64 message input for write safety
 - send and send-and-wait tools
 - CDP file upload and pending attachment removal
+- GitHub repository code import through Gemini's Import code dialog
 - check and smoke scripts
 - DOM fixture tests
 
@@ -25,7 +26,7 @@ npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
 ```
 
-Current tests: 9/9.
+Current tests: 10/10.
 
 ## Known Boundaries
 
@@ -33,6 +34,10 @@ Current tests: 9/9.
 - Upload/remove is implemented through CDP file chooser interception and
   in-tab mouse events. Live smoke verified upload creates one pending attachment
   and removal returns the composer to zero pending attachments.
+- GitHub repository import is implemented with `allowGithubConnect=false` by
+  default. Public repo import was live-tested with
+  `https://github.com/BossDever/gemini-chrome-mcp-project.git`, producing one
+  pending GitHub attachment and then removing it cleanly.
 - `gemini_cdp_send_and_wait` is early and needs more live fixtures. Its default
   timeout is intentionally below common 60s MCP client timeouts. In one live
   test, Gemini accepted the user turn but did not return an assistant response

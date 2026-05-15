@@ -48,6 +48,14 @@ Status: upload/remove is implemented through CDP file chooser interception and
 in-tab mouse events. Next hardening step is stricter file safety policy and more
 attachment fixtures.
 
+## Phase 5: Code Repository Import
+
+- Import public GitHub repository links through Gemini's Import code dialog.
+- Decline GitHub account connection by default.
+- Treat the resulting GitHub preview as a pending attachment and support remove.
+
+Status: implemented and live-tested with this repo.
+
 ## Avoid Initially
 
 - Playwright adapter

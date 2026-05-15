@@ -24,6 +24,7 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_bind_tab`
 - `gemini_cdp_get_bound_tab`
 - `gemini_cdp_get_state`
+- `gemini_cdp_import_code_repository`
 - `gemini_cdp_read`
 - `gemini_cdp_upload_file`
 - `gemini_cdp_remove_attachments`
@@ -37,6 +38,9 @@ early hardening work until more live Gemini response fixtures are collected.
 `gemini_cdp_upload_file` and `gemini_cdp_remove_attachments` use CDP file
 chooser interception and in-tab mouse events, so they do not take over the
 Windows mouse cursor.
+`gemini_cdp_import_code_repository` automates Gemini's "Import code" GitHub URL
+workflow and declines GitHub account connection by default unless explicitly
+allowed.
 
 Run checks with:
 

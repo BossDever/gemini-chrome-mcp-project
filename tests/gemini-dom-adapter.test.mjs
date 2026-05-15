@@ -96,3 +96,23 @@ test("attachment extraction deduplicates Gemini file preview controls", () => {
   assert.equal(attachments[0].hasRemoveControl, true);
   assert.equal(attachments[0].removeLabel, "Remove gemini-mcp-upload-smoke.txt");
 });
+
+test("attachment extraction deduplicates GitHub code link previews", () => {
+  const document = parseHTML(`
+    <div class="attachment-preview-wrapper">
+      <a data-test-id="code-link-preview">bossdever/...cp-project GitHub</a>
+      <div data-test-id="file-preview">
+        <div data-test-id="file-name">bossdever/...cp-project</div>
+        <button data-test-id="cancel-button" aria-label="Remove bossdever/gemini-chrome-mcp-project"></button>
+      </div>
+    </div>
+    <a data-test-id="code-link-preview">
+      <div data-test-id="file-name">bossdever/...cp-project</div>
+      <div>GitHub</div>
+    </a>
+  `).document;
+  const attachments = extractAttachmentCandidates(document);
+  assert.equal(attachments.length, 1);
+  assert.equal(attachments[0].name, "bossdever/...cp-project");
+  assert.equal(attachments[0].hasRemoveControl, true);
+});

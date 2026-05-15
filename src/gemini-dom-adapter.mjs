@@ -91,6 +91,7 @@ export function extractAttachmentCandidates(doc = document) {
   ];
   const seen = new WeakSet();
   const seenKeys = new Set();
+  const seenDisplayKeys = new Set();
   for (const card of cards) {
     if (seen.has(card)) continue;
     seen.add(card);
@@ -102,6 +103,9 @@ export function extractAttachmentCandidates(doc = document) {
     const name = textOf(nameEl) || text;
     const removeLabel = removeButton?.getAttribute?.("aria-label") || textOf(removeButton);
     if (!name && !removeLabel) continue;
+    const displayKey = `${name}|${text}`;
+    if (seenDisplayKeys.has(displayKey)) continue;
+    seenDisplayKeys.add(displayKey);
     const key = removeLabel || `${name}|${text}`;
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
