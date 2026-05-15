@@ -19,6 +19,8 @@ provider-specific and independent from the stable ChatGPT MCP project.
 - Implement low-level CDP tab connection and binding.
 - Implement `gemini_cdp_get_state`.
 - Implement `gemini_cdp_read` with raw and conservative structured modes.
+- Support `messageBase64` before any write workflow so Thai and unusual symbols
+  do not pass through lossy shell encoding.
 - Add DOM fixture tests and tool-registration tests.
 - Add `npm run check` and `npm run smoke:mcp`.
 

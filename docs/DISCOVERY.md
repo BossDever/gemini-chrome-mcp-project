@@ -141,3 +141,110 @@ Use CDP to create or open a harmless Gemini conversation, then inspect:
 - final assistant response state
 - any copy/code block controls
 - whether old turns remain in the DOM or are virtualized
+
+## Conversation DOM After A Test Prompt
+
+A harmless prompt was submitted through CDP to create a real conversation. The
+write succeeded, but the Thai text became `????` because the shell script passed
+Thai directly through a lossy command encoding path. Gemini implementation must
+use UTF-8 base64 message input, like the ChatGPT MCP project, before writing to
+the composer.
+
+After submit, Gemini navigated to a conversation URL:
+
+```text
+https://gemini.google.com/app/1254be877f795ced?pli=1
+```
+
+The page title became:
+
+```text
+MCP: Gemini's Actionable AI Bridge - Google Gemini
+```
+
+### User Turn
+
+Observed user-turn containers:
+
+```text
+user-query
+.query-text
+```
+
+Example structure:
+
+```html
+<user-query class="ng-star-inserted">
+  คุณบอกว่า
+
+  ????? MCP Gemini: ??????? ? ??? ??????
+</user-query>
+
+<div class="query-text gds-body-l" role="heading">
+  คุณบอกว่า
+
+  ????? MCP Gemini: ??????? ? ??? ??????
+</div>
+```
+
+The user text includes Gemini's localized prefix (`คุณบอกว่า`). The DOM adapter
+should strip that prefix only in a locale-aware and tested way, or preserve raw
+text with metadata until enough fixtures exist.
+
+### Model Turn
+
+Observed model-turn containers:
+
+```text
+model-response
+response-container
+message-content
+.model-response-text
+```
+
+Best initial extraction target:
+
+```css
+model-response message-content
+```
+
+`response-container` and `model-response` include extra labels such as
+`แสดงวิธีคิด` and `Gemini บอกว่า`, while `message-content` contained the model
+answer body more cleanly.
+
+`.model-response-text` was a custom `structured-content-container` element:
+
+```html
+<structured-content-container
+  class="model-response-text has-thoughts contains-extensions-response processing-state-visible ...">
+  ...
+</structured-content-container>
+```
+
+The `processing-state-visible` class appeared while the response was still
+processing. Treat that as a possible generating/streaming signal, but verify with
+more fixtures before relying on it.
+
+### Turn Extraction Guidance
+
+Initial conservative turn extraction can use:
+
+- user turns: `user-query`
+- assistant turns: `model-response message-content`
+
+Pair turns by DOM order rather than assuming each user turn always has one
+assistant response. Return `completeConversation=false` and
+`virtualizationPossible=true` until older-history behavior is understood.
+
+### Encoding Guidance
+
+Do not send Thai or unusual symbols from shell text directly. The first live
+write produced:
+
+```text
+????? MCP Gemini: ??????? ? ??? ??????
+```
+
+The Gemini MCP server should accept `messageBase64` and decode UTF-8 before DOM
+injection. It should also keep a suspicious-text guard for long `????` runs, as
+the ChatGPT MCP server does.
