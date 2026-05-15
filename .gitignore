@@ -4,3 +4,4 @@ archive/
 *.zip
 gemini-mcp-*.txt
 cdp-remove-test-*.txt
+generated-downloads/
