@@ -108,6 +108,228 @@ async function auditCdpWrite(tool, result, context = {}) {
 
 const server = new McpServer({ name: "gemini-chrome-mcp", version: "0.1.0" });
 
+async function inspectGeminiCandidateTab({ baseUrl, tab, maxChars = 1000 }) {
+  try {
+    const state = await getCdpState({ baseUrl, tabId: tab.id, maxChars });
+    return {
+      tab,
+      ok: Boolean(state?.ok),
+      ready: Boolean(state?.state?.hasComposer),
+      loginLikelyRequired: !state?.state?.hasComposer,
+      state: {
+        hasComposer: Boolean(state?.state?.hasComposer),
+        isGenerating: Boolean(state?.state?.isGenerating),
+        attachmentCount: state?.state?.attachmentCount ?? 0,
+      },
+    };
+  } catch (error) {
+    return {
+      tab,
+      ok: false,
+      ready: false,
+      loginLikelyRequired: true,
+      errorCode: "GEMINI_TAB_INSPECTION_FAILED",
+      error: error.message,
+    };
+  }
+}
+
+async function bindPreparedGeminiTab({ baseUrl, sessionName, tab }) {
+  const normalizedSessionName = normalizeSessionName(sessionName);
+  const binding = {
+    sessionName: normalizedSessionName,
+    baseUrl,
+    tabId: tab.id,
+    title: tab.title,
+    url: tab.url,
+    boundAt: new Date().toISOString(),
+  };
+  await writeBoundCdpTarget(normalizedSessionName, binding);
+  return binding;
+}
+
+async function prepareGeminiSession({
+  baseUrl = defaultCdpBaseUrl(),
+  sessionName = "default",
+  launchIfUnavailable = true,
+  openIfNoTab = true,
+  port = 9222,
+  userDataDir = defaultChromeUserDataDir(),
+  chromePath,
+  waitForReadyMs = 0,
+  pollMs = 1000,
+} = {}) {
+  const normalizedSessionName = normalizeSessionName(sessionName);
+  const status = await cdpStatus({ baseUrl });
+
+  if (!status.ok) {
+    if (!launchIfUnavailable) {
+      return {
+        ok: false,
+        ready: false,
+        state: "cdp_unavailable",
+        errorCode: "CDP_UNAVAILABLE",
+        baseUrl,
+        sessionName: normalizedSessionName,
+        status,
+        nextStep: "Launch the dedicated Gemini CDP Chrome profile, then run gemini_cdp_prepare_session again.",
+      };
+    }
+
+    const launched = await launchCdpChrome({
+      port,
+      userDataDir,
+      chromePath,
+      url: "https://gemini.google.com/app",
+      waitForReadyMs,
+      pollMs,
+    });
+    const launchedBaseUrl = launched.baseUrl ?? `http://127.0.0.1:${port}`;
+    if (launched.ready?.ready && launched.ready?.tab) {
+      const binding = await bindPreparedGeminiTab({
+        baseUrl: launchedBaseUrl,
+        sessionName: normalizedSessionName,
+        tab: launched.ready.tab,
+      });
+      return {
+        ok: true,
+        ready: true,
+        state: "ready",
+        baseUrl: launchedBaseUrl,
+        sessionName: normalizedSessionName,
+        binding,
+        launched,
+        nextStep: "ready",
+      };
+    }
+    return {
+      ok: true,
+      ready: false,
+      state: "login_required",
+      actionRequired: "USER_LOGIN",
+      errorCode: "CHROME_LAUNCHED_LOGIN_REQUIRED",
+      baseUrl: launchedBaseUrl,
+      sessionName: normalizedSessionName,
+      launched,
+      nextStep: "Sign in to Gemini in the Chrome window that opened, then run gemini_cdp_prepare_session again.",
+    };
+  }
+
+  let binding = null;
+  let bindingWarnings = [];
+  try {
+    const target = await resolveBoundCdpTarget({
+      baseUrl,
+      sessionName: normalizedSessionName,
+      useBoundTab: true,
+      strictBinding: false,
+    });
+    binding = target.binding;
+    bindingWarnings = target.bindingWarnings ?? [];
+    const blockingWarnings = bindingWarnings.filter((warning) =>
+      ["CDP_BINDING_BASE_URL_OVERRIDDEN", "CDP_BINDING_TAB_ID_MISSING", "CDP_BOUND_TAB_NOT_FOUND", "CDP_BOUND_TAB_NOT_GEMINI"].includes(warning?.code),
+    );
+    if (binding && blockingWarnings.length === 0) {
+      const state = await getCdpState({ baseUrl: target.baseUrl, tabId: target.tabId, maxChars: 1000 });
+      if (state?.state?.hasComposer) {
+        return {
+          ok: true,
+          ready: true,
+          state: "ready",
+          baseUrl: target.baseUrl,
+          sessionName: normalizedSessionName,
+          binding,
+          bindingWarnings,
+          tab: state.tab,
+          nextStep: "ready",
+        };
+      }
+    }
+  } catch {
+    binding = null;
+    bindingWarnings = [];
+  }
+
+  const tabs = await listCdpTabs({ baseUrl });
+  let candidates = tabs.filter((tab) => isGeminiUrl(tab.url));
+
+  if (candidates.length === 0 && openIfNoTab) {
+    const tab = await openCdpTab({ baseUrl, url: "https://gemini.google.com/app" });
+    candidates = [tab];
+  }
+
+  if (candidates.length === 0) {
+    return {
+      ok: true,
+      ready: false,
+      state: "no_tab",
+      errorCode: "NO_GEMINI_TAB",
+      baseUrl,
+      sessionName: normalizedSessionName,
+      status,
+      nextStep: "Open https://gemini.google.com/app in the dedicated Chrome profile, sign in if needed, then run gemini_cdp_prepare_session again.",
+    };
+  }
+
+  const inspected = await Promise.all(candidates.map((tab) => inspectGeminiCandidateTab({ baseUrl, tab })));
+  const readyCandidates = inspected.filter((candidate) => candidate.ready);
+
+  if (readyCandidates.length === 1) {
+    const preparedBinding = await bindPreparedGeminiTab({
+      baseUrl,
+      sessionName: normalizedSessionName,
+      tab: readyCandidates[0].tab,
+    });
+    return {
+      ok: true,
+      ready: true,
+      state: "ready",
+      baseUrl,
+      sessionName: normalizedSessionName,
+      binding: preparedBinding,
+      tab: readyCandidates[0].tab,
+      bindingWarnings,
+      nextStep: "ready",
+    };
+  }
+
+  if (readyCandidates.length > 1) {
+    return {
+      ok: true,
+      ready: false,
+      state: "ambiguous_tab",
+      errorCode: "AMBIGUOUS_GEMINI_TAB",
+      baseUrl,
+      sessionName: normalizedSessionName,
+      candidates: readyCandidates.map(({ tab }) => ({
+        tabId: tab.id,
+        title: tab.title,
+        url: tab.url,
+      })),
+      nextStep: "Bind the intended Gemini tab by tabId, or close extra Gemini tabs and run gemini_cdp_prepare_session again.",
+    };
+  }
+
+  return {
+    ok: true,
+    ready: false,
+    state: "login_required",
+    actionRequired: "USER_LOGIN",
+    errorCode: "GEMINI_LOGIN_REQUIRED",
+    baseUrl,
+    sessionName: normalizedSessionName,
+    candidates: inspected.map(({ tab, errorCode, error, state }) => ({
+      tabId: tab.id,
+      title: tab.title,
+      url: tab.url,
+      errorCode,
+      error,
+      state,
+    })),
+    nextStep: "Sign in to Gemini in the dedicated Chrome window, then run gemini_cdp_prepare_session again.",
+  };
+}
+
 server.registerTool(
   "chrome_cdp_status",
   {
@@ -184,6 +406,59 @@ server.registerTool(
     const tabs = await listCdpTabs({ baseUrl, includeNonPages });
     const result = { ok: true, tabs };
     return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result };
+  },
+);
+
+server.registerTool(
+  "gemini_cdp_prepare_session",
+  {
+    title: "Prepare Gemini CDP session",
+    description:
+      "Guided first-run workflow for Gemini CDP: checks/launches Chrome, detects login requirements, binds a ready tab, and returns the next user/agent step.",
+    inputSchema: {
+      baseUrl: z.string().optional(),
+      sessionName: z.string().optional(),
+      launchIfUnavailable: z.boolean().optional(),
+      openIfNoTab: z.boolean().optional(),
+      port: z.number().int().min(1024).max(65535).optional(),
+      userDataDir: z.string().optional(),
+      chromePath: z.string().optional(),
+      waitForReadyMs: z.number().int().min(0).max(900000).optional(),
+      pollMs: z.number().int().min(250).max(10000).optional(),
+      requestId: z.string().optional(),
+    },
+    annotations: { readOnlyHint: false, openWorldHint: true },
+  },
+  async ({ baseUrl = defaultCdpBaseUrl(), sessionName = "default", launchIfUnavailable = true, openIfNoTab = true, port = 9222, userDataDir = defaultChromeUserDataDir(), chromePath, waitForReadyMs = 0, pollMs = 1000, requestId }) => {
+    const startedAt = new Date().toISOString();
+    try {
+      const prepared = await prepareGeminiSession({
+        baseUrl,
+        sessionName,
+        launchIfUnavailable,
+        openIfNoTab,
+        port,
+        userDataDir,
+        chromePath,
+        waitForReadyMs,
+        pollMs,
+      });
+      const result = withMeta(prepared, { requestId, startedAt });
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: !result.ok };
+    } catch (error) {
+      const result = withMeta(
+        {
+          ok: false,
+          ready: false,
+          state: "failed",
+          errorCode: "GEMINI_PREPARE_SESSION_FAILED",
+          error: error.message,
+          nextStep: "Check Chrome CDP status and rerun gemini_cdp_prepare_session.",
+        },
+        { requestId, startedAt },
+      );
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], structuredContent: result, isError: true };
+    }
   },
 );
 

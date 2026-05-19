@@ -23,6 +23,7 @@ test("Gemini server registers the expected MCP tools", () => {
     "chrome_cdp_status",
     "chrome_cdp_launch",
     "chrome_cdp_list_tabs",
+    "gemini_cdp_prepare_session",
     "chrome_cdp_open_tab",
     "gemini_cdp_bind_tab",
     "gemini_cdp_get_bound_tab",
@@ -48,6 +49,11 @@ test("Gemini write tools keep key safety and workflow schema fields", () => {
   const launch = toolBlock("chrome_cdp_launch");
   for (const key of ["port", "userDataDir", "chromePath", "url", "waitForReadyMs", "pollMs", "bindSessionName"]) {
     assert.match(launch, new RegExp(`\\b${key}:`), `missing ${key}`);
+  }
+
+  const prepare = toolBlock("gemini_cdp_prepare_session");
+  for (const key of ["launchIfUnavailable", "openIfNoTab", "waitForReadyMs", "pollMs"]) {
+    assert.match(prepare, new RegExp(`\\b${key}:`), `missing ${key}`);
   }
 
   const sendAndWait = toolBlock("gemini_cdp_send_and_wait");
