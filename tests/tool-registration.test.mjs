@@ -55,6 +55,17 @@ test("Gemini write tools keep key safety and workflow schema fields", () => {
   for (const key of ["launchIfUnavailable", "openIfNoTab", "waitForReadyMs", "pollMs"]) {
     assert.match(prepare, new RegExp(`\\b${key}:`), `missing ${key}`);
   }
+  for (const code of [
+    "CDP_UNAVAILABLE",
+    "CHROME_LAUNCHED_LOGIN_REQUIRED",
+    "NO_GEMINI_TAB",
+    "AMBIGUOUS_GEMINI_TAB",
+    "GEMINI_LOGIN_REQUIRED",
+  ]) {
+    assert.match(serverSource, new RegExp(code), `missing ${code}`);
+  }
+  assert.match(serverSource, /writeBoundCdpTarget/);
+  assert.match(prepare, /nextStep/);
 
   const sendAndWait = toolBlock("gemini_cdp_send_and_wait");
   for (const key of [
