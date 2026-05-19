@@ -9,6 +9,7 @@
     "smoke:mcp": "node scripts/smoke-mcp.mjs",
     "mcp": "node src/server.mjs",
     "cdp:status": "node --input-type=module -e \"import { cdpStatus } from './src/cdp-client.mjs'; console.log(JSON.stringify(await cdpStatus(), null, 2));\"",
+    "cdp:launch": "node --input-type=module -e \"import { launchCdpChrome } from './src/cdp-client.mjs'; console.log(JSON.stringify(await launchCdpChrome(), null, 2));\"",
     "cdp:list": "node --input-type=module -e \"import { listCdpTabs } from './src/cdp-client.mjs'; console.log(JSON.stringify(await listCdpTabs(), null, 2));\"",
     "cdp:open": "node --input-type=module -e \"import { openCdpTab } from './src/cdp-client.mjs'; console.log(JSON.stringify(await openCdpTab({ url: 'https://gemini.google.com/app' }), null, 2));\""
   },

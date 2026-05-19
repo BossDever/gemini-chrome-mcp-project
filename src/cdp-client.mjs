@@ -1,5 +1,8 @@
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { verifyLocalUploadFile } from "./file-safety.mjs";
 import { geminiDomAdapterScript } from "./gemini-dom-adapter.mjs";
@@ -13,6 +16,25 @@ const cdpQueues = new Map();
 
 export function defaultCdpBaseUrl() {
   return process.env.GEMINI_CHROME_MCP_CDP_URL || DEFAULT_CDP_BASE_URL;
+}
+
+export function defaultChromeUserDataDir() {
+  return path.join(process.cwd(), ".gemini-chrome-mcp", "chrome-profile");
+}
+
+export function defaultChromePath() {
+  if (process.platform !== "win32") return "google-chrome";
+
+  const configured = process.env.GEMINI_CHROME_PATH || process.env.CHROME_PATH;
+  if (configured) return configured;
+
+  const candidates = [
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    path.join(os.homedir(), "AppData", "Local", "Google", "Chrome", "Application", "chrome.exe"),
+  ];
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? "chrome.exe";
 }
 
 export function sleep(ms) {
@@ -60,6 +82,12 @@ function assertGeminiTab(tab) {
   throw new Error(`CDP_TAB_NOT_GEMINI: ${tab?.url ?? "unknown URL"}`);
 }
 
+export function isGeminiBusy(state) {
+  if (!state?.isGenerating) return false;
+  const assistantAfterUser = Number(state.lastAssistantTurnIndex ?? -1) > Number(state.lastUserTurnIndex ?? -1);
+  return !(assistantAfterUser && Number(state.lastAssistantTextLength ?? 0) > 0);
+}
+
 async function fetchJson(url, { timeoutMs = 5000, method = "GET" } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -85,8 +113,144 @@ export async function cdpStatus({ baseUrl = defaultCdpBaseUrl(), timeoutMs = 250
       webSocketDebuggerUrl: version.webSocketDebuggerUrl ?? null,
     };
   } catch (error) {
-    return { ok: false, baseUrl: normalized, error: error.message };
+    return { ok: false, baseUrl: normalized, errorCode: "CDP_NOT_AVAILABLE", error: error.message };
   }
+}
+
+export async function launchCdpChrome({
+  port = 9222,
+  userDataDir = defaultChromeUserDataDir(),
+  chromePath = defaultChromePath(),
+  url = "https://gemini.google.com/app",
+  waitMs = 2500,
+  waitForReadyMs = 0,
+  pollMs = 1000,
+} = {}) {
+  await mkdir(userDataDir, { recursive: true });
+
+  const args = [
+    `--remote-debugging-port=${port}`,
+    "--remote-debugging-address=127.0.0.1",
+    `--user-data-dir=${userDataDir}`,
+    "--no-first-run",
+    "--no-default-browser-check",
+    "--new-window",
+    url,
+  ];
+
+  const child = spawn(chromePath, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: false,
+  });
+  child.unref();
+
+  await sleep(waitMs);
+  const baseUrl = `http://127.0.0.1:${port}`;
+  const status = await cdpStatus({ baseUrl, timeoutMs: 5000 });
+  const ready = status.ok
+    ? await waitForGeminiReady({ baseUrl, waitForReadyMs, pollMs })
+    : { ok: false, ready: false, errorCode: "CDP_NOT_AVAILABLE", elapsedMs: 0 };
+  return {
+    ok: status.ok,
+    launchedProcessId: child.pid ?? null,
+    chromePath,
+    userDataDir,
+    port,
+    baseUrl,
+    initialUrl: url,
+    status,
+    ready,
+    actionRequired: ready.ready
+      ? null
+      : "Log in to Gemini in the Chrome window that opened, then report back so the tab can be checked and bound.",
+  };
+}
+
+export async function waitForGeminiReady({
+  baseUrl = defaultCdpBaseUrl(),
+  waitForReadyMs = 300000,
+  pollMs = 1000,
+} = {}) {
+  const started = Date.now();
+  const deadline = started + Math.max(0, waitForReadyMs);
+  let last = null;
+
+  do {
+    try {
+      const tabs = await listCdpTabs({ baseUrl });
+      const candidates = tabs.filter((tab) => {
+        try {
+          return new URL(tab.url).hostname === "gemini.google.com";
+        } catch {
+          return false;
+        }
+      });
+      for (const tab of candidates) {
+        const readiness = await inspectGeminiReadiness(tab).catch((error) => ({
+          ok: false,
+          ready: false,
+          errorCode: "GEMINI_READY_INSPECTION_FAILED",
+          error: error.message,
+          tab,
+        }));
+        last = readiness;
+        if (readiness.ready) {
+          return { ...readiness, elapsedMs: Date.now() - started, timedOut: false };
+        }
+      }
+      if (!last) {
+        last = {
+          ok: false,
+          ready: false,
+          errorCode: "GEMINI_TAB_NOT_FOUND",
+          loginLikelyRequired: true,
+          tabCount: tabs.length,
+        };
+      }
+    } catch (error) {
+      last = { ok: false, ready: false, errorCode: "GEMINI_READY_CHECK_FAILED", error: error.message };
+    }
+
+    if (Date.now() >= deadline) break;
+    await sleep(Math.min(Math.max(250, pollMs), Math.max(250, deadline - Date.now())));
+  } while (Date.now() <= deadline);
+
+  return {
+    ...(last ?? { ok: false, ready: false, errorCode: "GEMINI_READY_TIMEOUT" }),
+    ready: false,
+    timedOut: waitForReadyMs > 0,
+    elapsedMs: Date.now() - started,
+  };
+}
+
+async function inspectGeminiReadiness(tab) {
+  return withCdpTab(tab, async (session) => {
+    const state = await evaluateCdp(session, `(() => {
+      const composer = [...document.querySelectorAll('.ql-editor[contenteditable="true"][role="textbox"], [role="textbox"][contenteditable="true"]')]
+        .find((el) => !el.classList?.contains("ql-clipboard"));
+      const text = (document.body?.innerText || "").replace(/\\s+/g, " ").slice(0, 1000);
+      const loginLikelyRequired = /sign in|log in|continue with|เข้าสู่ระบบ|ลงชื่อเข้าใช้/i.test(text);
+      return {
+        url: location.href,
+        title: document.title,
+        hasComposer: Boolean(composer),
+        loginLikelyRequired,
+      };
+    })()`);
+    return {
+      ok: true,
+      ready: Boolean(state?.hasComposer),
+      errorCode: state?.hasComposer ? undefined : "GEMINI_LOGIN_OR_APP_NOT_READY",
+      loginLikelyRequired: !state?.hasComposer && Boolean(state?.loginLikelyRequired),
+      tab: {
+        ...tab,
+        title: state?.title ?? tab.title,
+        url: state?.url ?? tab.url,
+      },
+      state,
+    };
+  });
 }
 
 export async function listCdpTabs({ baseUrl = defaultCdpBaseUrl(), includeNonPages = false } = {}) {
@@ -791,7 +955,7 @@ export async function sendCdpMessage({
   const encodedMessage = Buffer.from(message, "utf8").toString("base64");
   return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeSend = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
-    if (stateBeforeSend.isGenerating && !force) {
+    if (isGeminiBusy(stateBeforeSend) && !force) {
       return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeSend };
     }
     if (stateBeforeSend.composerText && !replaceDraft) {
@@ -870,7 +1034,7 @@ export async function sendCdpMessageAndWait({
     const state = (await getCdpState({ baseUrl, tabId: sent.tab.id })).state;
     lastState = state;
     const hasAssistantAfterUser = state.lastAssistantTurnIndex > state.lastUserTurnIndex;
-    if (!state.isGenerating && hasAssistantAfterUser && state.lastAssistantTextLength > 0) {
+    if (hasAssistantAfterUser && state.lastAssistantTextLength > 0) {
       if (state.lastAssistantTextHash !== candidateHash) {
         candidateHash = state.lastAssistantTextHash;
         stableSince = Date.now();
@@ -879,7 +1043,12 @@ export async function sendCdpMessageAndWait({
           ok: true,
           tab: sent.tab,
           sent,
-          wait: { ok: true, stableMs, elapsedMs: Date.now() - start },
+          wait: {
+            ok: true,
+            stableMs,
+            elapsedMs: Date.now() - start,
+            acceptedWhileGenerating: Boolean(state.isGenerating),
+          },
           lastAssistantText: state.lastAssistantText,
           lastAssistantTextHash: state.lastAssistantTextHash,
           finalState: state,
@@ -924,7 +1093,7 @@ export async function uploadCdpFile({
 
   return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeUpload = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
-    if (stateBeforeUpload.isGenerating && !force) {
+    if (isGeminiBusy(stateBeforeUpload) && !force) {
       return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeUpload };
     }
 
@@ -1184,7 +1353,7 @@ export async function importCdpCodeRepository({
 
   return withLockedCdpTab({ baseUrl: normalized, tab, lockTimeoutMs }, async (session) => {
     const stateBeforeImport = (await getCdpState({ baseUrl: normalized, tabId: tab.id })).state;
-    if (stateBeforeImport.isGenerating && !force) {
+    if (isGeminiBusy(stateBeforeImport) && !force) {
       return { ok: false, errorCode: "BUSY_GENERATING", tab, stateBeforeImport };
     }
 

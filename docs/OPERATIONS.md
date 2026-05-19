@@ -9,6 +9,25 @@
 5. Use `gemini_cdp_generate_image_and_save` for image generation instead of
    manually chaining toolbox selection, send, polling, and save.
 
+From the workspace root, start the shared local CDP profile with:
+
+```powershell
+.\scripts\start-cdp-chrome.ps1 -Url https://gemini.google.com/app
+```
+
+When launching through MCP `chrome_cdp_launch`, the tool opens Chrome and
+reports whether the Gemini composer is already ready. If the profile is new,
+log in inside the Chrome window that opens, then tell the agent you are done so
+it can bind/check the tab. Pass `bindSessionName: "default"` to bind
+automatically only when the composer is already visible. Set `waitForReadyMs`
+explicitly when a blocking wait is desired.
+
+Register the Gemini MCP server in Codex with:
+
+```powershell
+.\scripts\register-codex-mcp.ps1 -SkipChatGpt
+```
+
 ## Image Generation
 
 `gemini_cdp_generate_image_and_save` performs the full image path:
@@ -34,8 +53,12 @@ npm run check
 npm run smoke:mcp
 npm run smoke:mcp -- --require-cdp --require-binding
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
+npm run smoke:mcp -- --require-cdp --require-binding --live-send-and-wait
 npm run smoke:mcp -- --require-cdp --require-binding --generate-image-save
 ```
+
+`--live-send-and-wait` sends a real message in the bound Gemini tab and should
+only be run when changing the conversation is acceptable.
 
 Only run `--generate-image-save` when a real generated image smoke is intended,
 because it can consume provider quota and takes longer than normal smoke tests.

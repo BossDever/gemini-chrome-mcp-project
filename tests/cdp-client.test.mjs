@@ -2,15 +2,46 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  defaultChromePath,
   githubRepositoryKey,
+  isGeminiBusy,
   normalizeForTurnMatch,
   parseGithubRepositoryUrl,
   verifyOwnUserTurn,
 } from "../src/cdp-client.mjs";
 
+test("defaultChromePath honors explicit environment override", () => {
+  const previousGemini = process.env.GEMINI_CHROME_PATH;
+  const previousChrome = process.env.CHROME_PATH;
+  try {
+    process.env.GEMINI_CHROME_PATH = "C:\\Custom\\chrome.exe";
+    delete process.env.CHROME_PATH;
+    assert.equal(
+      defaultChromePath(),
+      process.platform === "win32" ? "C:\\Custom\\chrome.exe" : "google-chrome",
+    );
+  } finally {
+    if (previousGemini === undefined) delete process.env.GEMINI_CHROME_PATH;
+    else process.env.GEMINI_CHROME_PATH = previousGemini;
+    if (previousChrome === undefined) delete process.env.CHROME_PATH;
+    else process.env.CHROME_PATH = previousChrome;
+  }
+});
+
 test("normalizeForTurnMatch collapses whitespace and normalizes text", () => {
   assert.equal(normalizeForTurnMatch("  hello\n\nGemini  "), "hello Gemini");
   assert.equal(normalizeForTurnMatch("ＡＢＣ"), "ABC");
+});
+
+test("isGeminiBusy ignores stale generating signal after assistant text appears", () => {
+  assert.equal(isGeminiBusy({ isGenerating: false }), false);
+  assert.equal(isGeminiBusy({ isGenerating: true, lastUserTurnIndex: 0, lastAssistantTurnIndex: -1 }), true);
+  assert.equal(isGeminiBusy({
+    isGenerating: true,
+    lastUserTurnIndex: 0,
+    lastAssistantTurnIndex: 1,
+    lastAssistantTextLength: 13,
+  }), false);
 });
 
 test("verifyOwnUserTurn requires an advanced user turn index and matching text", () => {

@@ -61,16 +61,17 @@ export async function verifyLocalUploadFile(filePath, {
   const name = path.basename(filePath);
   const blocked = blockedExtensions.has(extension);
   const tooLarge = fileInfo.size > maxBytes;
-  const sha256 = await sha256File(filePath);
   const warnings = [];
   if (blocked) warnings.push("UPLOAD_EXTENSION_BLOCKED");
   if (tooLarge) warnings.push("UPLOAD_FILE_TOO_LARGE");
 
+  if (!allowUnsafe && tooLarge) {
+    return { ok: false, errorCode: "UPLOAD_FILE_TOO_LARGE", name, extension, sizeBytes: fileInfo.size, maxBytes, sha256: null, warnings };
+  }
+
+  const sha256 = await sha256File(filePath);
   if (!allowUnsafe && blocked) {
     return { ok: false, errorCode: "UPLOAD_EXTENSION_BLOCKED", name, extension, sizeBytes: fileInfo.size, maxBytes, sha256, warnings };
-  }
-  if (!allowUnsafe && tooLarge) {
-    return { ok: false, errorCode: "UPLOAD_FILE_TOO_LARGE", name, extension, sizeBytes: fileInfo.size, maxBytes, sha256, warnings };
   }
 
   return {

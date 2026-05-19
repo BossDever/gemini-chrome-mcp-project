@@ -19,6 +19,7 @@ This project should reuse the proven patterns from
 The first implementation milestone is CDP-only and provider-specific:
 
 - `chrome_cdp_status`
+- `chrome_cdp_launch`
 - `chrome_cdp_list_tabs`
 - `chrome_cdp_open_tab`
 - `gemini_cdp_bind_tab`
@@ -35,10 +36,16 @@ The first implementation milestone is CDP-only and provider-specific:
 - `gemini_cdp_save_generated_image`
 - `gemini_cdp_generate_image_and_save`
 
-The stable path starts with tab binding and read/state tools. `gemini_cdp_send`
+The stable path starts with launching or reusing a CDP Chrome profile, tab
+binding, and read/state tools. `chrome_cdp_launch` opens the Chrome profile and
+reports whether the Gemini composer is ready. If login is needed, finish it in
+the opened Chrome window and tell the agent to continue; pass `waitForReadyMs`
+only when a blocking wait is desired, and `bindSessionName` to bind an already
+ready tab automatically.
+`gemini_cdp_send`
 supports `messageBase64` so Thai and unusual symbols do not pass through lossy
-shell encoding. `gemini_cdp_send_and_wait` exists, but should be treated as
-early hardening work until more live Gemini response fixtures are collected.
+shell encoding. `gemini_cdp_send_and_wait` has a live smoke path and should be
+rechecked against real Gemini UI changes before releases.
 Write workflows use per-tab CDP locks with operation timeouts and session
 cleanup. Submitted messages are verified against the advanced user turn text
 instead of accepting any turn count change.
@@ -73,10 +80,12 @@ Run checks with:
 npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
+npm run smoke:mcp -- --require-cdp --require-binding --live-send-and-wait
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
 npm run smoke:mcp -- --require-cdp --require-binding --generate-image-save
 ```
 
+The `--live-send-and-wait` smoke sends a real Gemini message in the bound tab.
 The `--generate-image-save` smoke is intentionally optional because it creates a
 real Gemini image and may consume quota or wait on provider-side generation.
 
@@ -85,6 +94,21 @@ real Gemini image and may consume quota or wait on provider-side generation.
 See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the day-to-day runbook and
 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for remaining provider
 constraints.
+
+## Add To Codex
+
+```powershell
+codex mcp add gemini-chrome -- node C:\Users\suwit\Desktop\MCP\gemini-chrome-mcp-project\src\server.mjs
+codex mcp list
+```
+
+From the workspace root, you can register both provider MCP servers with:
+
+```powershell
+.\scripts\register-codex-mcp.ps1
+```
+
+Restart Codex after adding or changing MCP server entries.
 
 ## Initial Direction
 

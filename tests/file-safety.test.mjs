@@ -36,6 +36,7 @@ test("verifyLocalUploadFile blocks oversized files unless unsafe uploads are all
   const blocked = await verifyLocalUploadFile(filePath, { maxBytes: 3 });
   assert.equal(blocked.ok, false);
   assert.equal(blocked.errorCode, "UPLOAD_FILE_TOO_LARGE");
+  assert.equal(blocked.sha256, null);
 
   const allowed = await verifyLocalUploadFile(filePath, { maxBytes: 3, allowUnsafe: true });
   assert.equal(allowed.ok, true);

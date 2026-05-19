@@ -60,6 +60,15 @@ export async function getCdpBindingWarnings({
   return warnings;
 }
 
+export function isStrictBlockingBindingWarning(warning) {
+  return [
+    "CDP_BINDING_BASE_URL_OVERRIDDEN",
+    "CDP_BINDING_TAB_ID_MISSING",
+    "CDP_BOUND_TAB_NOT_FOUND",
+    "CDP_BOUND_TAB_NOT_GEMINI",
+  ].includes(warning?.code);
+}
+
 export async function resolveBoundCdpTarget({
   baseUrl,
   tabId,
@@ -81,8 +90,9 @@ export async function resolveBoundCdpTarget({
     baseUrlOverridden: Boolean(baseUrl && binding?.baseUrl && baseUrl !== binding.baseUrl),
     findTab,
   });
-  if (strictBinding && bindingWarnings.length > 0) {
-    throw new Error(`CDP_BINDING_STALE: ${normalizedSessionName}: ${bindingWarnings.map((warning) => warning.code).join(",")}`);
+  const blockingWarnings = bindingWarnings.filter(isStrictBlockingBindingWarning);
+  if (strictBinding && blockingWarnings.length > 0) {
+    throw new Error(`CDP_BINDING_STALE: ${normalizedSessionName}: ${blockingWarnings.map((warning) => warning.code).join(",")}`);
   }
   return { baseUrl: resolvedBaseUrl, tabId: binding?.tabId, sessionName: normalizedSessionName, binding, bindingWarnings };
 }

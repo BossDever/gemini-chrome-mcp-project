@@ -2,10 +2,11 @@
 
 Baseline date: 2026-05-15
 
-This project has a first CDP-only Gemini MCP milestone. It is not yet at feature
-parity with the ChatGPT MCP project, but the core architecture is in place:
+This project has a hardened CDP-only Gemini MCP baseline. It is close to the
+ChatGPT MCP CDP path for core read/write workflows, while still lacking the
+ChatGPT project's UIA fallback and download tooling:
 
-- CDP tab discovery and opening
+- CDP Chrome launch, tab discovery, and opening
 - path-local tab binding under `.gemini-chrome-mcp/bindings/`
 - strict binding checks
 - raw and conservative structured read modes
@@ -21,6 +22,7 @@ parity with the ChatGPT MCP project, but the core architecture is in place:
 - GitHub repository code import through Gemini's Import code dialog
 - fail-closed GitHub consent matching and repository URL parsing
 - check and smoke scripts
+- live send-and-wait smoke
 - DOM fixture tests
 
 ## Verification
@@ -29,15 +31,35 @@ parity with the ChatGPT MCP project, but the core architecture is in place:
 npm run check
 npm run smoke:mcp -- --require-cdp --require-binding
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
+npm run smoke:mcp -- --require-cdp --require-binding --live-send-and-wait
 npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send --upload-remove-file C:\path\to\small.txt
 npm run smoke:mcp -- --require-cdp --require-binding --generate-image-save
 ```
 
-Current tests: 25/25.
+Current tests: 30/30.
+
+Latest local verification on 2026-05-16:
+
+```powershell
+npm run check
+npm run smoke:mcp
+npm run smoke:mcp -- --require-cdp --require-binding
+npm run smoke:mcp -- --require-cdp --require-binding --dry-run-send
+npm run smoke:mcp -- --require-cdp --require-binding --live-send-and-wait
+```
+
+All passed against the workspace CDP Chrome profile on `127.0.0.1:9222`.
+The live send-and-wait smoke completed in about 9.1 seconds. Gemini changed the
+conversation URL/title after the first real send; strict binding now treats
+same-tab Gemini URL/title drift as non-fatal warnings while still blocking
+missing tabs, base URL overrides, or non-Gemini tabs.
 
 ## Known Boundaries
 
-- Download tools are not implemented.
+- Generic download-click tools are not implemented. Image workflows can still
+  inspect visible artifacts and save visible generated images through
+  `gemini_cdp_list_artifacts`, `gemini_cdp_save_generated_image`, and
+  `gemini_cdp_generate_image_and_save`.
 - Image generation was tried live on 2026-05-15. Gemini accepted the prompt but
   the current page/model first responded that it could not directly output image
   files. After selecting the toolbar `image` mode, Gemini routed the request to
@@ -59,10 +81,9 @@ Current tests: 25/25.
 - GitHub consent automation now matches action labels instead of button order.
   If Gemini shows an unrecognized or ambiguous consent dialog, the import fails
   closed instead of clicking through.
-- `gemini_cdp_send_and_wait` is early and needs more live fixtures. Its default
-  timeout is intentionally below common 60s MCP client timeouts. In one live
-  test, Gemini accepted the user turn but did not return an assistant response
-  before the MCP client timeout.
+- `gemini_cdp_send_and_wait` has a passing live smoke, but Gemini can still
+  rate limit, delay, or change its DOM. Keep the live smoke in release checks
+  when validating against a new Gemini UI.
 - Generating detection uses visible stop controls, including Thai labels and
   structural stop indicators. Page-level spinners can represent side-nav/history
   loading and are intentionally ignored.

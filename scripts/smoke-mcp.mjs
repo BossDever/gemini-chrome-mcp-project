@@ -9,6 +9,7 @@ const rawArgs = process.argv.slice(2);
 const requireCdp = args.has("--require-cdp");
 const requireBinding = args.has("--require-binding");
 const dryRunSend = args.has("--dry-run-send");
+const liveSendAndWait = args.has("--live-send-and-wait");
 const generateImageSave = args.has("--generate-image-save");
 const uploadRemoveFile = valueAfterFlag(rawArgs, "--upload-remove-file");
 
@@ -46,7 +47,8 @@ async function clearComposerDraft(tabId) {
 try {
   const tools = await client.listTools();
   const names = tools.tools.map((tool) => tool.name).sort();
-  assert.equal(names.length, 16, "unexpected MCP tool count");
+  assert.equal(names.length, 17, "unexpected MCP tool count");
+  assert(names.includes("chrome_cdp_launch"), "missing chrome_cdp_launch");
   assert(names.includes("gemini_cdp_get_state"), "missing gemini_cdp_get_state");
   assert(names.includes("gemini_cdp_list_artifacts"), "missing gemini_cdp_list_artifacts");
   assert(names.includes("gemini_cdp_save_generated_image"), "missing gemini_cdp_save_generated_image");
@@ -66,6 +68,7 @@ try {
   let state = null;
   let structured = null;
   let dryRun = null;
+  let liveSend = null;
   let uploadRemove = null;
   let imageSave = null;
   if (cdpAvailable) {
@@ -113,6 +116,37 @@ try {
           assert.equal(cleanup.ok, true, `dry-run cleanup failed: ${cleanup.errorCode ?? cleanup.text ?? "unknown"}`);
         }
         dryRun = { ok: true, composerText: after.structuredContent?.state?.composerText, cleanupOk: true };
+      }
+      if (liveSendAndWait) {
+        const before = await client.callTool({
+          name: "gemini_cdp_get_state",
+          arguments: { sessionName: "default", strictBinding: true, maxChars: 1000 },
+        });
+        assert.equal(before.structuredContent?.state?.composerText || "", "", "live send requires an empty composer");
+        assert.equal(before.structuredContent?.state?.attachmentCount ?? 0, 0, "live send requires no pending attachments");
+        const runId = `gemini-mcp-live-${Date.now()}`;
+        const message = `Reply with exactly this token and nothing else: ${runId}`;
+        const sent = await client.callTool({
+          name: "gemini_cdp_send_and_wait",
+          arguments: {
+            sessionName: "default",
+            strictBinding: true,
+            messageBase64: Buffer.from(message, "utf8").toString("base64"),
+            replaceDraft: true,
+            timeoutMs: 90000,
+            pollMs: 1000,
+            stableMs: 1500,
+          },
+        }, undefined, { timeout: 150000 });
+        assert.equal(sent.structuredContent?.ok, true, "live send-and-wait failed");
+        assert.equal(sent.isError ?? false, false, "live send-and-wait returned an MCP error");
+        assert((sent.structuredContent?.lastAssistantTextLength ?? sent.structuredContent?.lastAssistantText?.length ?? 0) > 0, "live send-and-wait returned no assistant text");
+        liveSend = {
+          ok: true,
+          wait: sent.structuredContent?.wait ?? null,
+          lastAssistantTextHash: sent.structuredContent?.lastAssistantTextHash ?? null,
+          finalTurnCount: sent.structuredContent?.finalState?.turnCount ?? null,
+        };
       }
       if (uploadRemoveFile) {
         const before = await client.callTool({
@@ -182,6 +216,7 @@ try {
     strictStateOk: state?.structuredContent?.ok ?? null,
     structuredReadOk: structured?.structuredContent?.ok ?? null,
     dryRunSend: dryRun,
+    liveSendAndWait: liveSend,
     uploadRemove,
     imageSave,
     warnings: state?.structuredContent?.bindingWarnings?.map((warning) => warning.code) ?? [],
